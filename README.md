@@ -42,7 +42,8 @@ cbtui --help                # every option
 Click a piece and then its square, or use the arrow keys and Enter, or type a move (`e4`,
 `Nf3`, `O-O`, `e8=N`, `e2e4`) and press Enter. A pawn that reaches the last rank offers a
 queen, rook, bishop and knight on the squares beside it: click one, or press `q`, `r`, `b` or
-`n` (Enter is a queen, Esc puts the pawn back). Press `?` for help.
+`n` (Enter is a queen, Esc puts the pawn back). Press `?` for help; when it doesn't fit the
+terminal, ↑ ↓, Page Up, Page Down or the mouse wheel scroll it.
 
 | Key | |
 | --- | --- |
