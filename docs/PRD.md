@@ -58,7 +58,7 @@ types) and `cb2026-chess` (rules). The engine CI tests against is built from the
 chessengine commit as the rules crate.
 
 Licences: every linked crate is permissive (`cargo deny check`). The engine is a separate
-program; cbtui shows the licence it reports.
+program; cbtui shows the licence it reports, with its whole version, on the help screen.
 
 ## Milestones
 
