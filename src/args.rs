@@ -52,9 +52,8 @@ Options:
   -V, --version          The version
 
 Settings (the theme, pieces, zoom, which side the engine plays, its level, time, clock and
-pondering)
-are saved in ~/.cbtuirc as they change, and the next run starts with them; options here win
-over the file. $CBTUI_CONFIG names another file.";
+pondering) are saved in ~/.cbtuirc as they change, and the next run starts with them; options
+here win over the file. $CBTUI_CONFIG names another file.";
 
 /// What the command line asks for.
 #[derive(Clone, Debug, PartialEq)]

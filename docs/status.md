@@ -119,6 +119,12 @@ changes the picture.
   anything. The trial passed on the release PR's builds (2026-11-25): all four signed with the
   hardened runtime and still run, the Intel ones under Rosetta. Notarisation not run yet: it
   waits for the first tag.
+- **README: gone over for the first release** (twenty-third PR). A feature list up top,
+  unpack-and-run steps in Download, every option and command (`--movetime`, `--fen`, the
+  command aliases, what each command does alone), how cbtui finds its engine, the techniques
+  list's keys, the game endings, a Themes section, and the settings file on Windows. The
+  76×20 letters sample is a fresh capture. `cbtui --help` no longer breaks a line early.
+  Screenshots to take are #25 for Carlos.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
