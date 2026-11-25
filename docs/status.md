@@ -3,7 +3,13 @@
 What is merged, what is in flight, and how to carry on. Keep it current in every PR that
 changes the picture.
 
-## Where things are (2026-11-24)
+## Where things are (2026-11-25)
+
+- **v0.1.0 is out** (2026-11-25): https://github.com/cjus/cbtui/releases/tag/v0.1.0, with all
+  five downloads. The macOS binaries are signed and notarised (submission
+  42806842-5216-4bbf-aa49-cb57fe51be0b); a fresh download marked as from the web runs, and
+  `spctl` reports it as "Notarized Developer ID".
+
 
 - **M1 · Playable: built**, in the first PR. A game against cb2026 over CNP: board with mouse,
   arrow keys and typed SAN or coordinates; the engine plays white, black, both or none; levels
@@ -110,15 +116,15 @@ changes the picture.
 - **Release downloads: set up** (twenty-first PR). A `v*` tag builds cbtui and cb2026 (at the
   pinned commit, without Syzygy) for five targets and attaches them, with the licences and
   `THIRD-PARTY-NOTICES.txt` (`scripts/notices.sh`), to a draft release; cbtui finds the cb2026
-  unpacked beside it. The settings file finds the home directory on Windows too. No tag has
-  been pushed yet.
+  unpacked beside it. The settings file finds the home directory on Windows too. First used
+  for v0.1.0.
 - **macOS signing: set up** (twenty-second PR). Like cb2026's and Solrac's, on Carlos's Mac:
   `scripts/mac-sign-release.sh <tag>` signs both binaries of each macOS download with the
   keychain's Developer ID, notarises them with the `cb2026-notary` profile and replaces them on
   the draft; `--trial <run>` signs a workflow run's builds without sending or uploading
   anything. The trial passed on the release PR's builds (2026-11-25): all four signed with the
-  hardened runtime and still run, the Intel ones under Rosetta. Notarisation not run yet: it
-  waits for the first tag.
+  hardened runtime and still run, the Intel ones under Rosetta. Notarisation first ran for
+  v0.1.0, and Apple accepted it.
 - **README: gone over for the first release** (twenty-third PR). A feature list up top,
   unpack-and-run steps in Download, every option and command (`--movetime`, `--fen`, the
   command aliases, what each command does alone), how cbtui finds its engine, the techniques
