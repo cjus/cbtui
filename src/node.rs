@@ -35,8 +35,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cnp::engine::{
-    EngineProgress, Evaluate, EvaluateParams, Levels, Progress, Search, SearchParams, Stop,
-    StopParams, Techniques,
+    EngineProgress, Evaluate, EvaluateParams, Levels, Progress, Root, RootParams, Search,
+    SearchParams, Stop, StopParams, Techniques,
 };
 use cnp::lifecycle::{
     Exit, Initialize, InitializeParams, InitializeResult, PROTOCOL_VERSION, Shutdown, Software,
@@ -54,6 +54,8 @@ const EXIT_GRACE: Duration = Duration::from_millis(1500);
 pub enum NodeEvent {
     /// `engine/progress`: a search's best line so far.
     Progress(Progress),
+    /// `engine/root`: where a search is at its root.
+    Root(RootParams),
     /// The answer to a request, matched to it by id.
     Response(Response),
     /// A line the engine wrote to its stderr.
@@ -152,8 +154,12 @@ impl Node {
                             && let Ok(progress) = note.params::<EngineProgress>()
                         {
                             on_event(NodeEvent::Progress(progress));
+                        } else if note.is::<Root>()
+                            && let Ok(root) = note.params::<Root>()
+                        {
+                            on_event(NodeEvent::Root(root));
                         }
-                        // Other notifications (`engine/root`, ...) aren't asked for yet.
+                        // Other notifications aren't asked for.
                     }
                     Ok(Some(Message::Response(response))) => {
                         on_event(NodeEvent::Response(response));

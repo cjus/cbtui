@@ -76,6 +76,12 @@ const ENGINE_PANEL_MIN_ROWS: u16 = 5;
 /// The move list's height, frame included, that the engine panel leaves it if it can.
 const MOVES_PANEL_MIN_ROWS: u16 = 5;
 
+/// Rows at the bottom of the root view for the latest re-search.
+const ROOT_RESEARCH_ROWS: u16 = 3;
+
+/// Columns for a root move's percentage after its bar.
+const ROOT_PERCENT_COLUMNS: usize = 5;
+
 /// How wide the evaluation and techniques overlays are, at most.
 const OVERLAY_WIDTH: u16 = 72;
 
@@ -358,7 +364,11 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
                 let side = panels.info.union(panels.moves).union(panels.engine);
                 let [info, moves, notes] = split_side(side, REVIEW_INFO_PANEL_ROWS);
                 draw_review_info(frame, info, review);
-                draw_review_moves(frame, moves, review);
+                if app.follow_root {
+                    draw_root(frame, moves, app);
+                } else {
+                    draw_review_moves(frame, moves, review);
+                }
                 match &app.analysis {
                     Some(analysis) => draw_analysis(frame, notes, analysis, app.analysis_lines()),
                     None => draw_notes(frame, notes, review),
@@ -367,13 +377,13 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
             }
             None if app.promotion.is_some() => {
                 draw_info(frame, panels.info, app);
-                draw_moves(frame, panels.moves, app);
+                draw_moves_or_root(frame, panels.moves, app);
                 draw_engine(frame, panels.engine, app);
                 "promote: click a piece · q queen · r rook · b bishop · n knight · Enter queen · Esc put back"
             }
             None => {
                 draw_info(frame, panels.info, app);
-                draw_moves(frame, panels.moves, app);
+                draw_moves_or_root(frame, panels.moves, app);
                 draw_engine(frame, panels.engine, app);
                 "click or arrows: move · type a move · m engine moves · u undo · n new · i analyse · [ ] look back · t flip · z zoom · : command · ? help · q quit"
             }
@@ -747,6 +757,95 @@ fn short_version(version: &str) -> String {
     }
 }
 
+/// The move list, or while following the root (`w`), the root.
+fn draw_moves_or_root(frame: &mut Frame, area: Rect, app: &App) {
+    if app.follow_root {
+        draw_root(frame, area, app);
+    } else {
+        draw_moves(frame, area, app);
+    }
+}
+
+/// The search at its root: the move it's on and the best so far, a bar for each root move's
+/// share of the effort, biggest first, and the latest thing it went back over.
+fn draw_root(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Root · w stops ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(root) = &app.root else {
+        let text =
+            Paragraph::new("Waiting for a search to report its root: the engine's turn, or i.")
+                .style(Style::default().add_modifier(Modifier::DIM))
+                .wrap(Wrap { trim: true });
+        frame.render_widget(text, inner);
+        return;
+    };
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut head = format!(
+        "depth {} · move {} of {}: {}",
+        root.depth, root.number, root.of, root.current
+    );
+    if let Some(best) = &root.best {
+        head.push_str(&format!(" · best {best}"));
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(head, bold)),
+        Line::from(Span::styled(
+            format!(
+                "{:.1}s · {} nodes · effort by root move:",
+                root.time_ms as f64 / 1000.0,
+                count_text(root.nodes)
+            ),
+            Style::default().add_modifier(Modifier::DIM),
+        )),
+    ];
+    // The re-search takes the last rows, wrapped; the bars get the rest.
+    let research_rows = if root.research.is_some() {
+        ROOT_RESEARCH_ROWS
+    } else {
+        0
+    };
+    let bar_rows = (inner.height as usize).saturating_sub(lines.len() + research_rows as usize);
+    let label_width = root
+        .efforts
+        .iter()
+        .map(|e| e.san.chars().count())
+        .max()
+        .unwrap_or(0);
+    let bar_width = (inner.width as usize).saturating_sub(label_width + ROOT_PERCENT_COLUMNS + 1);
+    for effort in root.efforts.iter().take(bar_rows) {
+        let filled = (effort.share * bar_width as f64).round() as usize;
+        let style = if root.best.as_deref() == Some(effort.san.as_str()) {
+            bold
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<label_width$} ", effort.san), style),
+            Span::styled("█".repeat(filled), style),
+            Span::raw(format!(
+                "{:>width$}",
+                format!("{:.0}%", effort.share * 100.0),
+                width = ROOT_PERCENT_COLUMNS + bar_width - filled
+            )),
+        ]));
+    }
+    let [bars, research] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(research_rows)]).areas(inner);
+    frame.render_widget(Paragraph::new(lines), bars);
+    if let Some((text, at)) = &root.research {
+        let text = format!("At {:.1}s: {text}", *at as f64 / 1000.0);
+        frame.render_widget(
+            Paragraph::new(text)
+                .style(Style::default().add_modifier(Modifier::DIM))
+                .wrap(Wrap { trim: true }),
+            research,
+        );
+    }
+}
+
 fn draw_moves(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Moves ");
     let rows = app.game.numbered_moves();
@@ -1114,6 +1213,8 @@ Keys
   i        analyse: the engine studies the board until i again; you
            move for both sides, and in the PGN viewer it follows you
   v        the engine's evaluation of the board, term by term
+  w        follow the search at its root: the move it's on, the effort
+           each root move has had, what it goes back over (w again)
   :        type a command
   ?        this help
   q        quit
@@ -1351,6 +1452,40 @@ mod tests {
         // Two called "Evaluation" show what tells them apart.
         assert!(text.contains("[x]  Evaluation: mobility"), "{text}");
         assert!(text.contains("[x]  Evaluation: pawns"), "{text}");
+    }
+
+    #[test]
+    fn the_root_shows_the_move_searched_and_bars_of_effort() {
+        let mut app = app();
+        app.follow_root = true;
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("Waiting for a search"), "{text}");
+        let report: cnp::engine::RootParams = serde_json::from_value(serde_json::json!({
+            "id": 2, "depth": 14, "move": "d2d4", "number": 2, "of": 20, "best": "e2e4",
+            "moves": [{"move": "e2e4", "nodes": 750}, {"move": "d2d4", "nodes": 250}],
+            "nodes": 372_437, "timeMs": 251,
+            "research": {"kind": "better", "move": "d2d4"}
+        }))
+        .unwrap();
+        app.root = Some(crate::root::RootView::update(
+            &report,
+            &rules::Position::startpos(),
+            None,
+        ));
+        let text = screen(&app, 100, 32);
+        assert!(
+            text.contains("depth 14 · move 2 of 20: d4 · best e4"),
+            "{text}"
+        );
+        let bar = |san: &str| {
+            text.lines()
+                .find(|l| l.contains(&format!("│{san} ")))
+                .map(|l| l.matches('█').count())
+                .unwrap_or(0)
+        };
+        assert!(bar("e4") > 2 * bar("d4") && bar("d4") > 0, "{text}");
+        assert!(text.contains("75%") && text.contains("25%"), "{text}");
+        assert!(text.contains("At 0.3s: d4 looked better"), "{text}");
     }
 
     #[test]

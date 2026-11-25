@@ -54,6 +54,7 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 | `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
 | `i` | analyse: the engine studies the position on the board, several lines at once, until `i` again |
 | `v` | the engine's evaluation of the position on the board, term by term |
+| `w` | follow the search at its root: the move it's on, each root move's share of the effort, what it goes back over |
 | `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
@@ -72,7 +73,10 @@ played what.
 `v` asks the engine what its evaluation of the position on the board is made of (material,
 mobility, king safety, whatever its terms are), and `:techniques` lists the search
 techniques it can switch, to turn them off or on for every search after: try analysing with
-null-move pruning off. Both appear only with an engine that has them.
+null-move pruning off. `w` follows the engine's searches at their root, in place of the
+move list: which root move it is searching, a bar for each move's share of its effort, and
+the latest thing it went back over (a move that looked better, a score outside its window).
+Each appears only with an engine that has it.
 
 ## View a PGN game
 

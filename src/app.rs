@@ -64,6 +64,7 @@ use crate::analysis::{Analysis, DEFAULT_LINES, MAX_LINES};
 use crate::clock::{Clocks, TimeControl};
 use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
+use crate::root::RootView;
 use crate::rules::{self, Color, Game, Move, Outcome, Piece, Position, Square};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
@@ -74,6 +75,9 @@ pub const PROGRESS_MS: u64 = 200;
 /// the others, which follow it within milliseconds; unthrottled, it reports each line once a
 /// depth, a few messages a second once the search is deep.
 pub const ANALYSIS_PROGRESS_MS: u64 = 0;
+
+/// How often a search reports its root, in milliseconds, when cbtui follows it.
+pub const ROOT_MS: u64 = 250;
 
 /// How long the engine thinks about a move by default, in milliseconds.
 pub const DEFAULT_MOVETIME_MS: u64 = 1000;
@@ -272,6 +276,10 @@ pub struct App {
     pub techniques: Option<Vec<Technique>>,
     /// The window open over the board, if any.
     pub overlay: Option<Overlay>,
+    /// Whether to follow searches at their root (`w`), when the engine can.
+    pub follow_root: bool,
+    /// The latest report of the current search's root.
+    pub root: Option<RootView>,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -336,6 +344,8 @@ impl App {
             evaluation: None,
             techniques: None,
             overlay: None,
+            follow_root: false,
+            root: None,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -678,6 +688,7 @@ impl App {
             KeyCode::Char('z') => self.zoomed = !self.zoomed,
             KeyCode::Char('i') => self.toggle_analysis(engine),
             KeyCode::Char('v') => self.evaluate(engine),
+            KeyCode::Char('w') => self.toggle_root(),
             // `m`: the engine moves (now, if it is thinking already).
             KeyCode::Char('m') if self.searching() => self.move_now(engine),
             KeyCode::Char('m') => self.go(engine),
@@ -756,6 +767,27 @@ impl App {
                 n => format!(" ({n} switched from the defaults)"),
             }
         );
+    }
+
+    /// Starts or stops following searches at their root: the next search reports it, and a
+    /// running analysis starts again to.
+    fn toggle_root(&mut self) {
+        if !self.node.caps.root {
+            self.status = format!("{} can't report its search's root.", self.node.name);
+            return;
+        }
+        self.follow_root = !self.follow_root;
+        self.root = None;
+        self.status = if self.follow_root {
+            "Following the search at its root, from the next search on. w stops.".into()
+        } else {
+            "Not following the root any more.".into()
+        };
+    }
+
+    /// Whether searches should report their root.
+    fn wants_root(&self) -> bool {
+        self.follow_root && self.node.caps.root
     }
 
     /// Opens the techniques, if the engine has them.
@@ -1063,6 +1095,7 @@ impl App {
             ("lines", [n]) => self.set_lines(n),
             ("eval" | "evaluate", _) => self.evaluate(engine),
             ("techniques" | "tech", _) => self.open_techniques(),
+            ("root", _) => self.toggle_root(),
             ("resign", _) => self.resign(engine),
             ("draw", _) => self.offer_draw(engine),
             ("clock", [text]) => self.set_clock(text),
@@ -1299,10 +1332,11 @@ impl App {
         let moves = rules::game_moves_uci(&game);
         // Switching a technique searches again too.
         let key = format!(
-            "{start} {} {} {:?}",
+            "{start} {} {} {:?} {}",
             moves.join(" "),
             self.analysis_lines(),
-            self.settings.techniques
+            self.settings.techniques,
+            self.wants_root()
         );
         if analysis.key.as_deref() == Some(key.as_str()) {
             return;
@@ -1322,9 +1356,13 @@ impl App {
             PROGRESS_MS
         });
         params.techniques = self.settings.techniques.clone();
+        if self.wants_root() {
+            params.root_ms = Some(ROOT_MS);
+        }
         params.game = Some(format!("cbtui-{}", self.game_number));
         match engine.search(&params) {
             Ok(id) => {
+                self.root = None;
                 if let Some(analysis) = &mut self.analysis {
                     analysis.restart(id, key);
                 }
@@ -1530,6 +1568,7 @@ impl App {
                     ply: self.game.moves().len(),
                 });
                 self.thinking = None;
+                self.root = None;
             }
             Err(e) => self.status = e,
         }
@@ -1574,6 +1613,9 @@ impl App {
             params.progress_ms = Some(PROGRESS_MS);
         }
         params.techniques = self.settings.techniques.clone();
+        if self.wants_root() {
+            params.root_ms = Some(ROOT_MS);
+        }
         // Lets the engine keep what it learned (its hash table) from move to move.
         params.game = Some(format!("cbtui-{}", self.game_number));
         params
@@ -1612,6 +1654,17 @@ impl App {
                         pv: rules::line_to_san(position, &progress.pv),
                     });
                 }
+            }
+            NodeEvent::Root(report) => {
+                let analysing = self.analysis.as_ref().and_then(|a| a.id);
+                let position = if analysing.is_some_and(|id| report.id == id.into()) {
+                    self.shown_position()
+                } else if self.pending.is_some_and(|p| report.id == p.id.into()) {
+                    self.game.position().clone()
+                } else {
+                    return;
+                };
+                self.root = Some(RootView::update(&report, &position, self.root.as_ref()));
             }
             NodeEvent::Response(response) => self.handle_response(response, engine),
             NodeEvent::Stderr(line) => {
@@ -2401,6 +2454,53 @@ mod tests {
         app.handle_key(key(' '), &mut engine);
         assert_eq!(engine.searches.len(), 2);
         assert_eq!(engine.searches[1].techniques.get("alphabeta"), Some(&false));
+    }
+
+    fn root_report(id: i64, mv: &str) -> NodeEvent {
+        NodeEvent::Root(
+            serde_json::from_value(serde_json::json!({
+                "id": id, "depth": 9, "move": mv, "number": 1, "of": 20,
+                "moves": [{"move": mv, "nodes": 50}], "nodes": 500, "timeMs": 30
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn w_follows_the_root_of_the_engines_searches_and_analyses() {
+        let mut n = node();
+        n.caps.root = true;
+        let (mut app, mut engine) = (
+            App::new(n, Settings::default()).unwrap(),
+            FakeEngine::default(),
+        );
+        app.handle_key(key('w'), &mut engine);
+        assert!(app.follow_root);
+        type_line(&mut app, &mut engine, "e4");
+        assert_eq!(engine.searches[0].root_ms, Some(ROOT_MS));
+        app.handle_node(root_report(101, "e7e5"), &mut engine);
+        assert_eq!(app.root.as_ref().unwrap().current, "e5");
+        // Another search's report is dropped.
+        app.handle_node(root_report(99, "c7c5"), &mut engine);
+        assert_eq!(app.root.as_ref().unwrap().current, "e5");
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+
+        // An analysis follows it too, from the position on the board.
+        app.handle_key(key('i'), &mut engine);
+        assert_eq!(engine.searches[1].root_ms, Some(ROOT_MS));
+        assert_eq!(app.root, None, "a new search starts afresh");
+        app.handle_node(root_report(102, "g1f3"), &mut engine);
+        assert_eq!(app.root.as_ref().unwrap().current, "Nf3");
+        // Stopping following starts the analysis again without it.
+        app.handle_key(key('w'), &mut engine);
+        assert_eq!(engine.searches.len(), 3);
+        assert_eq!(engine.searches[2].root_ms, None);
+
+        // An engine that can't: it says so.
+        let (mut app, mut engine) = (self::app(), FakeEngine::default());
+        app.handle_key(key('w'), &mut engine);
+        assert!(!app.follow_root);
+        assert!(app.status.contains("can't report"), "{}", app.status);
     }
 
     #[test]

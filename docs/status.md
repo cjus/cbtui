@@ -53,10 +53,16 @@ changes the picture.
   again with them. cb2026 names several techniques alike ("Evaluation", "Time"), so a shared
   name shows the description instead. Tried in tmux (2026-11-24): the terms of 1. e4 add up
   to its +0.33, and with alpha-beta off an analysis crawls to depth 4.
+- **Following the root: built** (eleventh PR). `w` or `:root` asks searches for
+  `engine/root` (every 250 ms, and at once on a re-search) and shows it in place of the move
+  list: the depth, the root move being searched and the best so far, a bar for each root
+  move's share of the effort, and the latest re-search in words. It works for the engine's
+  moves and for analyses; an analysis starts again when it's switched. Tried in tmux with
+  cb2026 (2026-11-24).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 92 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 96 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 3 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -77,8 +83,8 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M4 (`docs/PRD.md`): following the search at its root (`engine/root`), and browsing its tree
-(`engine/tree`, `engine/treeNode`). Later for the viewer: more than the first game
+M4 (`docs/PRD.md`): browsing a search's tree (`engine/tree`, `engine/treeNode`). (Following
+the root is done.) Later for the viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on
