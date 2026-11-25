@@ -69,6 +69,7 @@ use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
 use crate::root::RootView;
 use crate::rules::{self, Color, Game, Move, Outcome, Piece, Position, Square};
+use crate::theme::Theme;
 use crate::tree::{TREE_DEPTH, TREE_PLIES, TreeBrowser};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
@@ -184,6 +185,8 @@ pub struct Settings {
     pub lines: u32,
     /// Search techniques switched away from their defaults, by id, sent with every search.
     pub techniques: BTreeMap<String, bool>,
+    /// The board's colours.
+    pub theme: Theme,
 }
 
 impl Default for Settings {
@@ -196,6 +199,7 @@ impl Default for Settings {
             clock: None,
             lines: DEFAULT_LINES,
             techniques: BTreeMap::new(),
+            theme: Theme::default(),
         }
     }
 }
@@ -944,6 +948,15 @@ impl App {
         }
     }
 
+    /// Colours the board with `theme`.
+    fn set_theme(&mut self, theme: Theme) {
+        self.settings.theme = theme;
+        self.status = format!(
+            "The {theme} board. :theme goes on to the next ({}).",
+            theme.next()
+        );
+    }
+
     /// Shows the help, from its top.
     fn open_help(&mut self) {
         self.show_help = true;
@@ -1223,6 +1236,13 @@ impl App {
             ("fen", fen) if !fen.is_empty() => self.new_game(Some(fen.join(" ")), engine),
             ("flip", _) => self.flipped = !self.flipped,
             ("zoom", _) => self.zoomed = !self.zoomed,
+            ("theme", []) => self.set_theme(self.settings.theme.next()),
+            ("theme", [name]) => match Theme::parse(name) {
+                Some(theme) => self.set_theme(theme),
+                None => {
+                    self.status = format!("Usage: :theme {} (alone: the next one)", Theme::names())
+                }
+            },
             ("undo", _) => self.undo(engine),
             ("go", _) => self.go(engine),
             ("stop", _) => self.move_now(engine),
@@ -2897,6 +2917,24 @@ mod tests {
         app.help_scroll = 5;
         type_line(&mut app, &mut engine, ":help");
         assert_eq!(app.help_scroll, 0);
+    }
+
+    #[test]
+    fn theme_names_one_or_goes_on_to_the_next() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        assert_eq!(app.settings.theme, Theme::Brown);
+        type_line(&mut app, &mut engine, ":theme");
+        assert_eq!(app.settings.theme, Theme::Blue);
+        type_line(&mut app, &mut engine, ":theme grey");
+        assert_eq!(app.settings.theme, Theme::Grey);
+        assert!(app.status.contains("grey board"), "{}", app.status);
+        type_line(&mut app, &mut engine, ":theme pink");
+        assert_eq!(app.settings.theme, Theme::Grey);
+        assert!(
+            app.status.contains("brown, blue, green or grey"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]

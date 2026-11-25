@@ -68,7 +68,7 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 | **M2 · Clocks and game flow** | Chess clocks with increment (CNP `clock` limits), resign and draw offers, PGN load (the PGN viewer), promotion picker, move-list navigation (`[` `]`) | A timed game against cb2026 to the end |
 | **M3 · Analysis** | Infinite analysis with MultiPV (capabilities `multipv`), the evaluation broken into terms (`engine/evaluate`), technique switches (`engine/techniques`), each shown only when the engine has it | Analysing a position shows several lines and the evaluation's terms with cb2026 |
 | **M4 · Look inside** | Following the search at its root (`engine/root`) and browsing its search tree (`engine/tree`, `engine/treeNode`), generic views of what the engine reports | The tree browser opens a cb2026 search and walks it |
-| Later | Engines on another computer through cb2026's network client; a UCI backend; themes | Decided when M3 is done |
+| Later | Engines on another computer through cb2026's network client; a UCI backend (themes are done) | Decided when M3 is done |
 
 ## Decisions
 
@@ -108,5 +108,9 @@ program; cbtui shows the licence it reports, with its whole version, on the help
       the highlighted move marked. Scores and windows are shown from White's side, like
       every score; decisions are put in words in alpha-beta's terms, naming the technique
       (2026-11-24).
+- [x] Themes: brown (the default), blue, green and grey boards (`--theme`, `:theme`), each in
+      24-bit colour and the nearest 256-colour shades. Dark squares are mid tones so black and
+      white letter pieces both read on them; white letters on light squares take a deep
+      shade of the theme (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

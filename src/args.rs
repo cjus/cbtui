@@ -3,6 +3,7 @@
 use crate::app::{MAX_MOVETIME_MS, Settings};
 use crate::clock::TimeControl;
 use crate::pieces::PieceChoice;
+use crate::theme::Theme;
 
 /// The engine started when none is named: `cb2026` from the `PATH`, in CNP mode.
 pub const DEFAULT_ENGINE: &str = "cb2026";
@@ -29,6 +30,7 @@ Options:
   --fen <FEN>            Start from this position
   --pgn <file>           View the first game in a PGN file: the arrows step through it,
                          variations included. Works without an engine
+  --theme <name>         The board's colours: brown (default), blue, green, grey
   --pieces <style>       auto (default): pictures if the terminal can show them (not
                          inside tmux), else letters; letters: WK, BP; symbols: chess
                          symbols. --ascii is the same as --pieces letters
@@ -111,6 +113,11 @@ pub fn parse(
                 let text = value("--clock")?;
                 settings.clock =
                     Some(TimeControl::parse(&text).map_err(|e| format!("--clock: {e}"))?);
+            }
+            "--theme" => {
+                let name = value("--theme")?;
+                settings.theme = Theme::parse(&name)
+                    .ok_or_else(|| format!("--theme takes {}, not `{name}`", Theme::names()))?;
             }
             "--fen" => settings.fen = Some(value("--fen")?),
             "--pgn" => pgn = Some(value("--pgn")?),
@@ -205,6 +212,19 @@ mod tests {
         assert_eq!(settings.engine_plays, [true, false]);
         assert_eq!(settings.level, Some(8.0));
         assert_eq!(settings.movetime_ms, 250);
+    }
+
+    #[test]
+    fn reads_a_theme() {
+        let Args::Run { settings, .. } = run(&["--theme", "green"], None).unwrap() else {
+            panic!()
+        };
+        assert_eq!(settings.theme, Theme::Green);
+        assert!(
+            run(&["--theme", "pink"], None)
+                .unwrap_err()
+                .contains("pink")
+        );
     }
 
     #[test]
