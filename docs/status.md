@@ -11,8 +11,8 @@ changes the picture.
   nodes, speed, PV in SAN); move list; undo, new game, FEN, flip; PGN save; help overlay.
 - **Piece pictures: built** (second PR). On terminals with an image protocol the pieces are
   the Cburnett pictures, filling square squares, and the board fills its panel; elsewhere and
-  in tmux they are two letters (`WK`). Pictures can't be seen in tmux, so they need checking
-  in a real terminal (Ghostty, kitty, iTerm2, WezTerm).
+  in tmux they are two letters (`WK`). Checked in Ghostty by Carlos (2026-11-24, the README's
+  screenshot); kitty, iTerm2 and WezTerm not tried yet.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
