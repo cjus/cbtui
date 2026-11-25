@@ -18,6 +18,7 @@
 //! - [`review`]: a game read from PGN, with its variations, to step through;
 //! - [`ui`]: drawing it with [Ratatui](https://ratatui.rs);
 //! - [`help`]: the help screen's text, and how much of it fits;
+//! - [`theme`]: the board's colours;
 //! - [`pieces`]: pieces as pictures where the terminal can show them, else as letters;
 //! - [`args`]: the command line.
 //!
@@ -34,5 +35,6 @@ pub mod pieces;
 pub mod review;
 pub mod root;
 pub mod rules;
+pub mod theme;
 pub mod tree;
 pub mod ui;

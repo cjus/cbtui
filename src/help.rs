@@ -59,6 +59,7 @@ Commands
   :resign  :draw                resign, or offer the engine a draw
   :fen <FEN>                    a new game from a position
   :pgn <file>                   save the game
+  :theme [brown|blue|green|grey] the board's colours (alone: next)
   :new  :undo  :flip  :zoom  :go  :stop  :quit
 
 ↑ ↓, PgUp, PgDn or the wheel scroll; any other key closes.";

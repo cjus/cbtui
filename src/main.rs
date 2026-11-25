@@ -215,13 +215,12 @@ fn run(
     rx: &Receiver<Event>,
 ) -> io::Result<()> {
     // A terminal that shows pictures has 24-bit colour, and the pictures need it to match.
-    let palette = match pieces {
-        Pieces::Images(_) => Palette::TRUE_COLOR,
-        Pieces::Letters | Pieces::Symbols => Palette::detect(),
-    };
+    let true_color = matches!(pieces, Pieces::Images(_)) || ui::true_color_terminal();
     let mut area = Rect::default();
     // Engine-vs-engine at speed shouldn't pause on every redraw; at most once per batch.
     while !app.quit {
+        // Built each time, so `:theme` shows at once.
+        let palette = Palette::new(app.settings.theme, true_color);
         terminal.draw(|frame| {
             area = frame.area();
             ui::draw(frame, app, &palette, pieces);

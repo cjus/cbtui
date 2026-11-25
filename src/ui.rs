@@ -39,7 +39,8 @@
 //! tall ones, where the side panels' width was what held the board back.
 //!
 //! Colour: 24-bit when the terminal says it has it (`COLORTERM=truecolor`), or when it shows
-//! pictures, else the nearest of the 256 standard colours ([`Palette`]).
+//! pictures, else the nearest of the 256 standard colours ([`Palette`]). The squares are the
+//! theme's ([`crate::theme`]); the highlights are the same in every theme.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -56,6 +57,7 @@ use crate::help::HelpView;
 use crate::pieces::{self, Pieces};
 use crate::review::Review;
 use crate::rules::{self, Color, Position, Square};
+use crate::theme::Theme;
 
 /// The width the panels on the right need, at least.
 const SIDE_MIN_WIDTH: u16 = 32;
@@ -276,7 +278,7 @@ fn screen_to_board(column: usize, line: usize, flipped: bool) -> (usize, usize) 
     }
 }
 
-/// The colours the board uses.
+/// The colours the board uses: the theme's squares, and the rest, which every theme shares.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     light: Tint,
@@ -289,50 +291,57 @@ pub struct Palette {
     capture: Tint,
     white_piece: Tint,
     black_piece: Tint,
-    target: Tint,
+    /// White pieces' text on light squares, where white wouldn't show.
+    ink: Tint,
     picker: Tint,
 }
 
 impl Palette {
-    /// 24-bit colours.
-    pub const TRUE_COLOR: Palette = Palette {
-        light: Tint::Rgb(240, 217, 181),
-        dark: Tint::Rgb(181, 136, 99),
-        last_light: Tint::Rgb(206, 210, 107),
-        last_dark: Tint::Rgb(170, 162, 58),
-        selected: Tint::Rgb(120, 160, 110),
-        check: Tint::Rgb(220, 70, 60),
-        cursor: Tint::Rgb(110, 160, 210),
-        capture: Tint::Rgb(214, 120, 96),
-        white_piece: Tint::Rgb(255, 255, 255),
-        black_piece: Tint::Rgb(20, 20, 20),
-        target: Tint::Rgb(60, 90, 50),
-        picker: Tint::Rgb(125, 135, 160),
-    };
-
-    /// The nearest of the 256 standard colours.
-    pub const INDEXED: Palette = Palette {
-        light: Tint::Indexed(223),
-        dark: Tint::Indexed(137),
-        last_light: Tint::Indexed(186),
-        last_dark: Tint::Indexed(142),
-        selected: Tint::Indexed(108),
-        check: Tint::Indexed(167),
-        cursor: Tint::Indexed(74),
-        capture: Tint::Indexed(173),
-        white_piece: Tint::Indexed(231),
-        black_piece: Tint::Indexed(16),
-        target: Tint::Indexed(22),
-        picker: Tint::Indexed(103),
-    };
-
-    /// The palette for this terminal, from `COLORTERM`.
-    pub fn detect() -> Palette {
-        match std::env::var("COLORTERM").as_deref() {
-            Ok("truecolor" | "24bit") => Palette::TRUE_COLOR,
-            _ => Palette::INDEXED,
+    /// The palette for `theme`: 24-bit colours when `true_color`, else the nearest of the 256
+    /// standard colours.
+    pub fn new(theme: Theme, true_color: bool) -> Palette {
+        let (light, dark) = theme.squares(true_color);
+        let ink = theme.ink(true_color);
+        if true_color {
+            Palette {
+                light,
+                dark,
+                last_light: Tint::Rgb(206, 210, 107),
+                last_dark: Tint::Rgb(170, 162, 58),
+                selected: Tint::Rgb(120, 160, 110),
+                check: Tint::Rgb(220, 70, 60),
+                cursor: Tint::Rgb(110, 160, 210),
+                capture: Tint::Rgb(214, 120, 96),
+                white_piece: Tint::Rgb(255, 255, 255),
+                black_piece: Tint::Rgb(20, 20, 20),
+                ink,
+                picker: Tint::Rgb(125, 135, 160),
+            }
+        } else {
+            Palette {
+                light,
+                dark,
+                last_light: Tint::Indexed(186),
+                last_dark: Tint::Indexed(142),
+                selected: Tint::Indexed(108),
+                check: Tint::Indexed(167),
+                cursor: Tint::Indexed(74),
+                capture: Tint::Indexed(173),
+                white_piece: Tint::Indexed(231),
+                black_piece: Tint::Indexed(16),
+                ink,
+                picker: Tint::Indexed(103),
+            }
         }
     }
+}
+
+/// Whether this terminal says it has 24-bit colour (`COLORTERM`).
+pub fn true_color_terminal() -> bool {
+    matches!(
+        std::env::var("COLORTERM").as_deref(),
+        Ok("truecolor" | "24bit")
+    )
 }
 
 /// Draws the whole screen, with pieces drawn as `pieces` says.
@@ -639,7 +648,10 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
                     Image::new(picture).render(rect, buf);
                     continue;
                 }
+                // White text would vanish on a light square: there it takes the theme's ink.
+                let on_light = bg == palette.light || bg == palette.last_light;
                 let fg = match piece.color {
+                    Color::White if on_light => palette.ink,
                     Color::White => palette.white_piece,
                     Color::Black => palette.black_piece,
                 };
@@ -652,7 +664,9 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
                 let start = x + g.width.saturating_sub(text.chars().count() as u16) / 2;
                 buf.set_string(start, cy, text, style);
             } else if targets.contains(&square) {
-                buf.set_string(cx, cy, "•", Style::default().fg(palette.target).bg(bg));
+                // In the other square colour, which shows on any theme.
+                let dot = if light { palette.dark } else { palette.light };
+                buf.set_string(cx, cy, "•", Style::default().fg(dot).bg(bg));
             }
         }
         let rank = screen_to_board(0, line, app.flipped).1;
@@ -1419,7 +1433,7 @@ mod tests {
     fn screen_with(app: &App, width: u16, height: u16, pieces: &mut Pieces) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| draw(frame, app, &Palette::TRUE_COLOR, pieces))
+            .draw(|frame| draw(frame, app, &Palette::new(Theme::Brown, true), pieces))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let mut text = String::new();
@@ -1659,6 +1673,41 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Esc close the tree"), "{text}");
+    }
+
+    #[test]
+    fn each_theme_colours_the_squares_and_white_letters_stay_readable() {
+        for theme in Theme::ALL {
+            let palette = Palette::new(theme, true);
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+            terminal
+                .draw(|frame| draw(frame, &app(), &palette, &mut Pieces::Letters))
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // The cell where `piece` is written, on the first rank.
+            let cell = |piece: &str| {
+                let first = piece.chars().next().unwrap().to_string();
+                (0..32)
+                    .rev()
+                    .flat_map(|y| (0..99).map(move |x| (x, y)))
+                    .find(|&(x, y)| {
+                        buffer[(x, y)].symbol() == first
+                            && buffer[(x + 1, y)].symbol() == &piece[1..]
+                    })
+                    .map(|at| buffer[at].clone())
+                    .unwrap()
+            };
+            let (light, dark) = theme.squares(true);
+            // a1 is dark: a white rook in white. b1 is light: a white knight in the ink.
+            let rook = cell("WR");
+            assert_eq!(
+                (rook.bg, rook.fg),
+                (dark, Tint::Rgb(255, 255, 255)),
+                "{theme}"
+            );
+            let knight = cell("WN");
+            assert_eq!((knight.bg, knight.fg), (light, theme.ink(true)), "{theme}");
+        }
     }
 
     #[test]
@@ -1923,7 +1972,14 @@ mod tests {
         app.browse = Some(1);
         let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
         terminal
-            .draw(|frame| draw(frame, &app, &Palette::TRUE_COLOR, &mut Pieces::Letters))
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &app,
+                    &Palette::new(Theme::Brown, true),
+                    &mut Pieces::Letters,
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         // Find "e4" in the move list: it is the highlighted one.

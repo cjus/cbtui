@@ -75,10 +75,17 @@ changes the picture.
   show ("1–22 of 45"); any other key closes it. Lines wrap in a terminal narrower than the
   box, and a test keeps every help line within the box at full width. The text moved to
   `src/help.rs`. Tried in tmux at 80×24 (2026-11-25).
+- **Themes: built** (sixteenth PR). `--theme` or `:theme brown|blue|green|grey` (`:theme`
+  alone goes on to the next): white and royal blue, cream and green, off-white and slate,
+  besides the brown board. Each has 24-bit and 256-colour shades; the highlights are the
+  same in every theme. Letter and symbol pieces stay readable on every square: dark squares
+  are mid tones, white pieces on light squares take a deep shade of the theme, and the move
+  dots take the other square's colour. Tests check the contrast. Tried in tmux in 24-bit
+  colour (2026-11-25); picture pieces not tried yet.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 107 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 113 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -100,7 +107,7 @@ Engine features cb2026 offers that no milestone covers yet (mate search, Chess96
 root-move restriction, depth limits): Carlos to decide in #4.
 
 Every milestone in `docs/PRD.md` is built. What's left is the "Later" row (engines on
-another computer, a UCI backend, themes), to be decided now that M3 is done. Later for the
+another computer, a UCI backend; themes are done), to be decided now that M3 is done. Later for the
 viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
