@@ -14,20 +14,26 @@
 //!
 //! [`layout`] decides where everything goes and [`board_geometry`] where each square is. The
 //! same two functions place the mouse ([`square_at`]), so a click always lands on the square
-//! drawn under it. Squares grow with the terminal: 7×3 cells, 5×2 or 3×1, whichever fits.
+//! drawn under it.
 //!
-//! Colour: 24-bit when the terminal says it has it (`COLORTERM=truecolor`), else the nearest
-//! of the 256 standard colours, which every modern terminal has ([`Palette`]).
+//! Squares grow with the terminal. With pictures for pieces ([`crate::pieces`]) a square is as
+//! wide as it is tall in pixels, as big as the panel allows. With letters or symbols, which
+//! are a cell each whatever the square, squares are 7×3 cells, 5×2 or 3×1, whichever fits.
+//!
+//! Colour: 24-bit when the terminal says it has it (`COLORTERM=truecolor`), or when it shows
+//! pictures, else the nearest of the 256 standard colours ([`Palette`]).
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color as Tint, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui_image::Image;
 
 use crate::app::{App, score_text};
-use crate::rules::{self, Color, PieceType, Square};
+use crate::pieces::{self, Pieces};
+use crate::rules::{self, Color, Square};
 
 /// The width the panels on the right need, at least.
 const SIDE_MIN_WIDTH: u16 = 32;
@@ -40,6 +46,9 @@ pub const MIN_HEIGHT: u16 = 8 + 3 + 2;
 /// Square sizes, largest first: (width, height) in cells. Cells are about twice as tall as
 /// they are wide, so a square is about twice as wide as it is tall.
 const SQUARE_SIZES: [(u16, u16); 3] = [(7, 3), (5, 2), (3, 1)];
+
+/// The tallest square, in cells, when pieces are pictures and squares grow to fill the panel.
+const MAX_SQUARE_ROWS: u16 = 16;
 
 /// Where the parts of the screen go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,16 +80,25 @@ pub struct BoardGeometry {
     pub height: u16,
 }
 
-/// The size of square that fits in `width` × `height` cells with its labels.
-fn square_size(width: u16, height: u16) -> (u16, u16) {
-    SQUARE_SIZES
-        .into_iter()
-        .find(|&(w, h)| 8 * w + 3 <= width && 8 * h < height)
-        .unwrap_or(SQUARE_SIZES[2])
+/// The size of square that fits in `width` × `height` cells with its labels. `aspect` is a
+/// cell's height over its width when squares should be square in pixels (pictures), or
+/// `None` for the fixed sizes text pieces use.
+fn square_size(width: u16, height: u16, aspect: Option<f32>) -> (u16, u16) {
+    let fits = |&(w, h): &(u16, u16)| 8 * w + 3 <= width && 8 * h < height;
+    let smallest = SQUARE_SIZES[2];
+    match aspect {
+        None => SQUARE_SIZES.into_iter().find(fits).unwrap_or(smallest),
+        Some(aspect) => (1..=MAX_SQUARE_ROWS)
+            .rev()
+            .map(|h| ((f32::from(h) * aspect).round().max(2.0) as u16, h))
+            .find(fits)
+            .unwrap_or(smallest),
+    }
 }
 
-/// Where the parts of the screen go in `area`.
-pub fn layout(area: Rect) -> Panels {
+/// Where the parts of the screen go in `area`. `aspect` is a cell's height over its width
+/// when pieces are pictures, else `None`.
+pub fn layout(area: Rect, aspect: Option<f32>) -> Panels {
     let [main, status, keys] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(1),
@@ -91,6 +109,7 @@ pub fn layout(area: Rect) -> Panels {
     let (w, _) = square_size(
         main.width.saturating_sub(2 + SIDE_MIN_WIDTH),
         main.height.saturating_sub(2),
+        aspect,
     );
     let board_width = 8 * w + 3 + 2;
     let [board, side] =
@@ -111,10 +130,11 @@ pub fn layout(area: Rect) -> Panels {
     }
 }
 
-/// Where the squares are in the board's frame `board`.
-pub fn board_geometry(board: Rect) -> BoardGeometry {
+/// Where the squares are in the board's frame `board`. `aspect` is a cell's height over its
+/// width when pieces are pictures, else `None`.
+pub fn board_geometry(board: Rect, aspect: Option<f32>) -> BoardGeometry {
     let inner = Block::default().borders(Borders::ALL).inner(board);
-    let (width, height) = square_size(inner.width, inner.height);
+    let (width, height) = square_size(inner.width, inner.height, aspect);
     // Rank labels take the first two columns; centre the rest vertically.
     let used = 8 * height + 1;
     BoardGeometry {
@@ -125,9 +145,16 @@ pub fn board_geometry(board: Rect) -> BoardGeometry {
     }
 }
 
-/// The square drawn at screen column `col` and row `row`, if any.
-pub fn square_at(area: Rect, flipped: bool, col: u16, row: u16) -> Option<Square> {
-    let g = board_geometry(layout(area).board);
+/// The square drawn at screen column `col` and row `row`, if any. `aspect` is a cell's
+/// height over its width when pieces are pictures, else `None`.
+pub fn square_at(
+    area: Rect,
+    aspect: Option<f32>,
+    flipped: bool,
+    col: u16,
+    row: u16,
+) -> Option<Square> {
+    let g = board_geometry(layout(area, aspect).board, aspect);
     if col < g.x || row < g.y {
         return None;
     }
@@ -204,28 +231,8 @@ impl Palette {
     }
 }
 
-/// A piece's symbol: a chess glyph (the same solid shape for both sides, told apart by
-/// colour), or a letter (upper case for White) when `ascii` is on.
-fn piece_symbol(piece: rules::Piece, ascii: bool) -> char {
-    if ascii {
-        let c = piece.piece_type.to_char().to_ascii_uppercase();
-        return match piece.color {
-            Color::White => c,
-            Color::Black => c.to_ascii_lowercase(),
-        };
-    }
-    match piece.piece_type {
-        PieceType::King => '♚',
-        PieceType::Queen => '♛',
-        PieceType::Rook => '♜',
-        PieceType::Bishop => '♝',
-        PieceType::Knight => '♞',
-        PieceType::Pawn => '♟',
-    }
-}
-
-/// Draws the whole screen.
-pub fn draw(frame: &mut Frame, app: &App, palette: &Palette) {
+/// Draws the whole screen, with pieces drawn as `pieces` says.
+pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         let text = format!(
@@ -235,10 +242,10 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette) {
         frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
         return;
     }
-    let panels = layout(area);
+    let panels = layout(area, pieces.cell_aspect());
     let block = Block::default().borders(Borders::ALL).title(" Board ");
     frame.render_widget(block, panels.board);
-    draw_board(frame.buffer_mut(), panels.board, app, palette);
+    draw_board(frame.buffer_mut(), panels.board, app, palette, pieces);
     draw_info(frame, panels.info, app);
     draw_moves(frame, panels.moves, app);
     draw_engine(frame, panels.engine, app);
@@ -253,8 +260,8 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette) {
     }
 }
 
-fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette) {
-    let g = board_geometry(board);
+fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette, pieces: &mut Pieces) {
+    let g = board_geometry(board, pieces.cell_aspect());
     let position = app.game.position();
     let last = app.game.last_move().map(|played| played.mv);
     let targets = app.targets();
@@ -292,17 +299,27 @@ fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette) {
             buf.set_style(rect, Style::default().bg(bg));
             let (cx, cy) = (x + g.width / 2, y + g.height / 2);
             if let Some(piece) = piece {
+                // A picture fills the square, over its colour (which a picture needs as RGB:
+                // a terminal that shows pictures has 24-bit colour, so the palette is RGB).
+                if let Pieces::Images(art) = pieces
+                    && let Tint::Rgb(r, g_, b) = bg
+                    && let Some(picture) = art.picture(piece, [r, g_, b], (g.width, g.height))
+                {
+                    Image::new(picture).render(rect, buf);
+                    continue;
+                }
                 let fg = match piece.color {
                     Color::White => palette.white_piece,
                     Color::Black => palette.black_piece,
                 };
                 let style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
-                buf.set_string(
-                    cx,
-                    cy,
-                    piece_symbol(piece, app.settings.ascii).to_string(),
-                    style,
-                );
+                let text = match pieces {
+                    Pieces::Symbols => pieces::symbol(piece).to_string(),
+                    // Letters, and the fallback if a picture couldn't be made.
+                    Pieces::Letters | Pieces::Images(_) => pieces::letters(piece),
+                };
+                let start = x + g.width.saturating_sub(text.chars().count() as u16) / 2;
+                buf.set_string(start, cy, text, style);
             } else if targets.contains(&square) {
                 buf.set_string(cx, cy, "•", Style::default().fg(palette.target).bg(bg));
             }
@@ -506,9 +523,13 @@ mod tests {
     }
 
     fn screen(app: &App, width: u16, height: u16) -> String {
+        screen_with(app, width, height, &mut Pieces::Letters)
+    }
+
+    fn screen_with(app: &App, width: u16, height: u16, pieces: &mut Pieces) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| draw(frame, app, &Palette::INDEXED))
+            .draw(|frame| draw(frame, app, &Palette::TRUE_COLOR, pieces))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let mut text = String::new();
@@ -527,8 +548,34 @@ mod tests {
         assert!(text.contains("eng 1.2"), "{text}");
         assert!(text.contains("Licence: MIT"), "{text}");
         assert!(text.contains("White: you   Black: eng"), "{text}");
-        assert!(text.contains('♚'), "{text}");
+        assert!(text.contains("WK") && text.contains("BP"), "{text}");
         assert!(text.contains("White to move"), "{text}");
+    }
+
+    #[test]
+    fn symbols_are_still_there_if_asked_for() {
+        let text = screen_with(&app(), 100, 32, &mut Pieces::Symbols);
+        assert!(text.contains('♚'), "{text}");
+    }
+
+    #[test]
+    fn pictures_fill_square_squares_and_the_panel() {
+        use ratatui_image::FontSize;
+        use ratatui_image::picker::{Picker, ProtocolType};
+        // A terminal that speaks kitty's image protocol, with a 10×20-pixel font.
+        // A test has no terminal to ask, so it says the font size itself.
+        #[allow(deprecated)]
+        let mut picker = Picker::from_fontsize(FontSize::new(10, 20));
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let mut pieces = Pieces::choose(crate::pieces::PieceChoice::Auto, Some(picker));
+        assert!(matches!(pieces, Pieces::Images(_)));
+        let text = screen_with(&app(), 160, 50, &mut pieces);
+        // No letters: the pieces are pictures.
+        assert!(!text.contains("WK"), "{text}");
+        let g = board_geometry(layout(Rect::new(0, 0, 160, 50), Some(2.0)).board, Some(2.0));
+        // Twice as wide as tall in cells is square in pixels, and bigger than text's 7×3.
+        assert_eq!(g.width, 2 * g.height);
+        assert!(g.height > 3, "{g:?}");
     }
 
     #[test]
@@ -539,26 +586,36 @@ mod tests {
 
     #[test]
     fn clicks_land_on_the_square_drawn_under_them() {
-        for (width, height) in [(100, 32), (80, 24), (MIN_WIDTH, MIN_HEIGHT), (160, 50)] {
-            let area = Rect::new(0, 0, width, height);
-            let g = board_geometry(layout(area).board);
-            for flipped in [false, true] {
-                // The middle of the bottom-left square is a1, or h8 when flipped.
-                let col = g.x + g.width / 2;
-                let row = g.y + 7 * g.height + g.height / 2;
-                let expected = if flipped { "h8" } else { "a1" };
-                let square = square_at(area, flipped, col, row).unwrap();
-                assert_eq!(square.to_string(), expected, "{width}x{height}");
-                // Just off the board is nothing.
-                assert_eq!(square_at(area, flipped, g.x + 8 * g.width, row), None);
+        let sizes = [
+            (100, 32),
+            (80, 24),
+            (MIN_WIDTH, MIN_HEIGHT),
+            (160, 50),
+            (240, 70),
+        ];
+        for (width, height) in sizes {
+            for aspect in [None, Some(2.0), Some(2.2)] {
+                let area = Rect::new(0, 0, width, height);
+                let g = board_geometry(layout(area, aspect).board, aspect);
+                for flipped in [false, true] {
+                    // The middle of the bottom-left square is a1, or h8 when flipped.
+                    let col = g.x + g.width / 2;
+                    let row = g.y + 7 * g.height + g.height / 2;
+                    let expected = if flipped { "h8" } else { "a1" };
+                    let square = square_at(area, aspect, flipped, col, row).unwrap();
+                    assert_eq!(square.to_string(), expected, "{width}x{height} {aspect:?}");
+                    // Just off the board is nothing.
+                    let off = square_at(area, aspect, flipped, g.x + 8 * g.width, row);
+                    assert_eq!(off, None);
+                }
             }
         }
     }
 
     #[test]
     fn the_board_grows_with_the_terminal() {
-        let small = board_geometry(layout(Rect::new(0, 0, MIN_WIDTH, MIN_HEIGHT)).board);
-        let large = board_geometry(layout(Rect::new(0, 0, 160, 50)).board);
+        let geometry = |w, h| board_geometry(layout(Rect::new(0, 0, w, h), None).board, None);
+        let (small, large) = (geometry(MIN_WIDTH, MIN_HEIGHT), geometry(160, 50));
         assert_eq!((small.width, small.height), (3, 1));
         assert_eq!((large.width, large.height), (7, 3));
     }

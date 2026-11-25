@@ -20,6 +20,9 @@ cnp = { git = "https://github.com/cjus/chess-node-protocol", rev = "ba9e0ce52931
 # chessengine `main` commit; bump on purpose.
 cb2026-chess = { git = "https://github.com/cjus/chessengine", rev = "f41bbcc85c7aa7cfb85aa34653a659e54b433ffc" }
 serde_json = "1"
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
+resvg = { version = "0.50", default-features = false }
+image = { version = "0.25.10", default-features = false }
 
 [lints.rust]
 missing_docs = "deny"

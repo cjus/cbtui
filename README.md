@@ -72,8 +72,18 @@ Click a piece and then its square, or use the arrow keys and Enter, or type a mo
 | `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
-Colours are 24-bit when your terminal sets `COLORTERM=truecolor`, otherwise the nearest of the
-256 standard colours. If the chess symbols look wrong in your font, use `--ascii`.
+### Pieces
+
+In a terminal that can show images (Ghostty, kitty, WezTerm, iTerm2, or any with Sixel), the
+pieces are pictures that fill their squares, and the board grows to fill its panel. Everywhere
+else, and inside tmux, they are two letters: `WK` is White's king, `BP` a black pawn.
+`--pieces letters` or `--pieces symbols` (chess symbols, one cell each) choose for yourself.
+
+The pictures are Colin M. L. Burnett's pieces, from Wikimedia Commons, under the BSD licence
+(`assets/pieces/`).
+
+Colours are 24-bit when your terminal sets `COLORTERM=truecolor` or shows pictures, otherwise
+the nearest of the 256 standard colours.
 
 ## How it works
 

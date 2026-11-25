@@ -24,7 +24,9 @@ protocols, binary and tests don't change), and outlives one engine generation. T
   `CBTUI_ENGINE`), and every feature is switched on from the engine's `initialize` answer
   (capabilities and limits), never from its name or version.
 - **Works everywhere a terminal does**: macOS, Linux, Windows terminals, and over SSH;
-  256-colour fallback, `--ascii` pieces, a clear message when the terminal is too small.
+  256-colour fallback, a clear message when the terminal is too small.
+- **Pieces you can see**: pictures that fill their squares on terminals that can show images
+  (kitty's protocol, iTerm2's or Sixel), two letters (`WK`, `BP`) everywhere else.
 - **Generic and public**: the repository is public (`MIT OR Apache-2.0`). It shows what the
   engine reports in general terms. It does not carry any other product's coaching or
   explanation methods.
@@ -47,6 +49,7 @@ One crate, a library and a binary:
 | `rules` | Legal moves, SAN, FEN, PGN, game endings: a thin layer over `cb2026-chess`; the only module that names it |
 | `app` | The session's state and what keys, clicks and engine messages do to it. No terminal, no process: tested with a fake engine |
 | `ui` | Drawing with Ratatui; the same layout code places mouse clicks |
+| `pieces` | Pieces as pictures (ratatui-image finds the terminal's image protocol, resvg draws the SVGs at a square's size) or as two letters |
 | `args` | The command line |
 | `main.rs` | The terminal, and one event loop over one channel (keys, mouse, engine) |
 
@@ -74,3 +77,5 @@ program; cbtui shows the licence it reports.
 - [x] Generic: nothing that shares another product's way of explaining moves (Carlos,
       2026-11-24).
 - [x] CNP first, `cb2026-chess` for rules, Ratatui with its crossterm backend (2026-11-24).
+- [x] Pieces: pictures where the terminal can show them, Colin M. L. Burnett's set
+      (BSD, from Wikimedia Commons); two letters, `WK`, elsewhere (Carlos, 2026-11-24).
