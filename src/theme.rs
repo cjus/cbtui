@@ -19,7 +19,8 @@
 //!   letter (`WK`) or the hollow symbol still says whose piece it is.
 //! - Black text has to read on the dark squares, and white text too, so a dark square is a mid
 //!   tone, not as deep as a wooden or vinyl board's. A test checks every piece's text against
-//!   every square it can stand on.
+//!   every square it can stand on: 2.5:1 at least, and 2:1 for the dark theme, whose dark
+//!   squares are as dark as black letters can still be read on.
 //! - Picture pieces are drawn over their square's colour, so a theme change makes new pictures
 //!   (each is made once per piece, colour, tint and size).
 
@@ -121,16 +122,17 @@ impl Theme {
         };
         match self {
             Theme::Brown => light_theme(rgb(240, 217, 181), rgb(181, 136, 99), rgb(110, 72, 40)),
-            Theme::Blue => light_theme(rgb(228, 232, 238), rgb(56, 96, 196), rgb(30, 54, 132)),
+            Theme::Blue => light_theme(rgb(228, 232, 238), rgb(92, 130, 214), rgb(30, 54, 132)),
             Theme::Green => light_theme(rgb(236, 228, 200), rgb(52, 120, 72), rgb(26, 84, 44)),
             Theme::Grey => light_theme(rgb(232, 232, 230), rgb(96, 104, 118), rgb(64, 70, 82)),
             Theme::Dark => Colours {
-                light: rgb(110, 118, 132),
-                dark: rgb(78, 86, 100),
-                last_light: rgb(116, 120, 72),
-                last_dark: rgb(100, 104, 60),
+                light: rgb(88, 96, 110),
+                dark: rgb(60, 66, 78),
+                last_light: rgb(96, 100, 60),
+                last_dark: rgb(80, 84, 50),
                 white: rgb(200, 200, 192),
-                black: rgb(14, 14, 14),
+                // As dark as text goes, to show on the darkest squares.
+                black: rgb(0, 0, 0),
                 // Muted white reads on these squares, so it stays.
                 ink: rgb(200, 200, 192),
             },
@@ -150,13 +152,13 @@ impl Theme {
         };
         match self {
             Theme::Brown => light_theme(ix(223), ix(137), ix(94)),
-            Theme::Blue => light_theme(ix(254), ix(26), ix(19)),
+            Theme::Blue => light_theme(ix(254), ix(68), ix(19)),
             Theme::Green => light_theme(ix(230), ix(28), ix(22)),
             Theme::Grey => light_theme(ix(255), ix(243), ix(238)),
             Theme::Dark => Colours {
-                light: ix(243),
-                dark: ix(240),
-                last_light: ix(101),
+                light: ix(240),
+                dark: ix(237),
+                last_light: ix(100),
                 last_dark: ix(58),
                 white: ix(251),
                 black: ix(16),
@@ -232,9 +234,12 @@ mod tests {
                 ("black on light", c.black, c.light),
                 ("black on the last move's dark", c.black, c.last_dark),
             ];
+            // The dark theme trades some contrast for dimness: black letters on its darkest
+            // squares are the faintest text on any board.
+            let least = if theme == Theme::Dark { 2.0 } else { 2.5 };
             for (what, text, square) in pairs {
                 let ratio = contrast(text, square);
-                assert!(ratio >= 2.5, "{theme}: {what} is {ratio:.2}");
+                assert!(ratio >= least, "{theme}: {what} is {ratio:.2}");
             }
         }
     }

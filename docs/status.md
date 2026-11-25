@@ -88,6 +88,11 @@ changes the picture.
   theme's white, then laid over the square. Each theme now sets its pieces' and last move's
   colours as well as its squares'. Tried in tmux in 24-bit colour (2026-11-25); pictures
   not tried yet.
+- **Theme tweaks** (eighteenth PR, Carlos's asks). The blue board's dark squares are a lighter
+  blue (92,130,214). The dark board's squares are darker (88,96,110 and 60,66,78), with its
+  last-move tints dimmed and black pieces pure black; black letters on its darkest squares
+  are about 2:1, the faintest on any board, which the contrast test allows for this theme
+  only. Tried in tmux in 24-bit colour (2026-11-25).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
