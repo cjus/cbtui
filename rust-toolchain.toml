@@ -1,0 +1,4 @@
+# Pin the compiler so builds and lints are the same on every machine. Bump it in its own PR.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]

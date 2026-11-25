@@ -1,0 +1,29 @@
+[package]
+name = "cbtui"
+description = "A full-screen terminal chess client for engines that speak the Chess Node Protocol (cb2026 and its successors)."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cjus/cbtui"
+publish = false
+
+[dependencies]
+# The terminal UI (MIT). Its `crossterm` backend is re-exported as `ratatui::crossterm`, so the
+# two can't drift apart.
+ratatui = "0.30"
+# The Chess Node Protocol's messages and types (MIT OR Apache-2.0). Engine-neutral: positions
+# travel as text, so any CNP node works, not only cb2026. Pinned to a commit; bump on purpose.
+cnp = { git = "https://github.com/cjus/chess-node-protocol", rev = "ba9e0ce5293154cedbae0477d29255513a4fb2fc" }
+# Chess rules: legal moves, SAN, FEN, PGN and the end-of-game rules (MIT OR Apache-2.0, no I/O).
+# Only `src/rules.rs` uses it, so another rules library could replace it there. Pinned to a
+# chessengine `main` commit; bump on purpose.
+cb2026-chess = { git = "https://github.com/cjus/chessengine", rev = "f41bbcc85c7aa7cfb85aa34653a659e54b433ffc" }
+serde_json = "1"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
