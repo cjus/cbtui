@@ -2,8 +2,9 @@
 
 use std::io;
 use std::process::ExitCode;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use cbtui::app::{App, NodeSummary};
 use cbtui::args::{self, Args, ENGINE_ENV, USAGE};
@@ -18,6 +19,9 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
+
+/// How often the screen is redrawn while a clock runs, so it counts down smoothly.
+const CLOCK_REDRAW: Duration = Duration::from_millis(100);
 
 /// Everything the loop reacts to, from one channel.
 enum Event {
@@ -215,11 +219,26 @@ fn run(
             area = frame.area();
             ui::draw(frame, app, &palette, pieces);
         })?;
-        let Ok(first) = rx.recv() else {
-            return Ok(());
+        // While a clock runs, wake up to redraw it (and to see a flag fall) even when
+        // nothing happens.
+        let first = if app.clock_running() {
+            match rx.recv_timeout(CLOCK_REDRAW) {
+                Ok(event) => Some(event),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            }
+        } else {
+            match rx.recv() {
+                Ok(event) => Some(event),
+                Err(_) => return Ok(()),
+            }
         };
+        // The time comes first, so a move is charged to the clock as it stands now.
+        app.tick(Instant::now(), engine_of(node, &mut NoEngine));
         let aspect = pieces.cell_aspect();
-        handle(first, app, node, area, aspect);
+        if let Some(first) = first {
+            handle(first, app, node, area, aspect);
+        }
         while let Ok(event) = rx.try_recv() {
             handle(event, app, node, area, aspect);
         }

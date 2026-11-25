@@ -1,6 +1,7 @@
 //! The command line.
 
 use crate::app::{MAX_MOVETIME_MS, Settings};
+use crate::clock::TimeControl;
 use crate::pieces::PieceChoice;
 
 /// The engine started when none is named: `cb2026` from the `PATH`, in CNP mode.
@@ -24,6 +25,7 @@ Options:
   --play <side>          Which sides the engine plays: white, black (default), both, none
   --level <n>            The engine's playing level, if it has levels (default: full strength)
   --movetime <ms>        How long the engine thinks a move (default: 1000)
+  --clock <min>+<sec>    Play to a clock: minutes each, seconds added a move (5+3)
   --fen <FEN>            Start from this position
   --pgn <file>           View the first game in a PGN file: the arrows step through it,
                          variations included. Works without an engine
@@ -104,6 +106,11 @@ pub fn parse(
                             "--movetime takes 1 to {MAX_MOVETIME_MS} milliseconds, not `{text}`"
                         )
                     })?;
+            }
+            "--clock" => {
+                let text = value("--clock")?;
+                settings.clock =
+                    Some(TimeControl::parse(&text).map_err(|e| format!("--clock: {e}"))?);
             }
             "--fen" => settings.fen = Some(value("--fen")?),
             "--pgn" => pgn = Some(value("--pgn")?),
@@ -198,6 +205,20 @@ mod tests {
         assert_eq!(settings.engine_plays, [true, false]);
         assert_eq!(settings.level, Some(8.0));
         assert_eq!(settings.movetime_ms, 250);
+    }
+
+    #[test]
+    fn reads_a_clock() {
+        let Args::Run { settings, .. } = run(&["--clock", "3+2"], None).unwrap() else {
+            panic!()
+        };
+        let clock = settings.clock.unwrap();
+        assert_eq!((clock.base_ms, clock.increment_ms), (180_000, 2000));
+        assert!(
+            run(&["--clock", "soon"], None)
+                .unwrap_err()
+                .contains("--clock")
+        );
     }
 
     #[test]
