@@ -39,10 +39,17 @@ changes the picture.
   Tried in tmux (2026-11-24): cb2026 against itself at 0.2+0 played 72 moves until White's
   flag fell; at 5+3, a draw offer after 1. e4 was accepted (cb2026 scored itself -0.17), and
   a resignation was taken back.
+- **Analysis: built** (ninth PR). `i` or `:analyse`: the engine searches the position on the
+  board until `i` again, with several lines (`:lines <n>`, 3 by default, if it has
+  `multipv`), and the search starts again whenever the board changes: a move for either
+  side, `[` `]`, or a step in the PGN viewer, where it takes the notes' place. The engine
+  plays neither side meanwhile and the clocks stop. cb2026 throttles its progress with one
+  interval for all lines, so with several lines cbtui asks for every report
+  (`progressMs` 0): about one message per line per depth. Tried in tmux (2026-11-24).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 81 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 88 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -63,8 +70,8 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M3 (`docs/PRD.md`): infinite analysis with several lines (MultiPV), the evaluation broken
-into terms, technique switches. Later for the viewer: more than the first game
+M3 (`docs/PRD.md`): the evaluation broken into terms, technique switches. (Analysis with
+several lines is done.) Later for the viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on

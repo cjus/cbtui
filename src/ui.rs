@@ -49,6 +49,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui_image::Image;
 
+use crate::analysis::Analysis;
 use crate::app::{App, score_text};
 use crate::clock::clock_text;
 use crate::pieces::{self, Pieces};
@@ -74,6 +75,9 @@ const ENGINE_PANEL_MIN_ROWS: u16 = 5;
 
 /// The move list's height, frame included, that the engine panel leaves it if it can.
 const MOVES_PANEL_MIN_ROWS: u16 = 5;
+
+/// How many moves of the best line the zoomed status line shows while analysing.
+const ZOOM_PV_MOVES: usize = 4;
 
 /// How many characters of a commit hash an engine's version shows ([`short_version`]).
 const SHORT_HASH_LEN: usize = 7;
@@ -345,8 +349,11 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
                 let [info, moves, notes] = split_side(side, REVIEW_INFO_PANEL_ROWS);
                 draw_review_info(frame, info, review);
                 draw_review_moves(frame, moves, review);
-                draw_notes(frame, notes, review);
-                "← → step · ↑ ↓ start/end · 1-9 variation · :play <side> play on · t flip · z zoom · ? help · q quit"
+                match &app.analysis {
+                    Some(analysis) => draw_analysis(frame, notes, analysis, app.analysis_lines()),
+                    None => draw_notes(frame, notes, review),
+                }
+                "← → step · ↑ ↓ start/end · 1-9 variation · i analyse · :play <side> play on · t flip · z zoom · ? help · q quit"
             }
             None if app.promotion.is_some() => {
                 draw_info(frame, panels.info, app);
@@ -358,7 +365,7 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
                 draw_info(frame, panels.info, app);
                 draw_moves(frame, panels.moves, app);
                 draw_engine(frame, panels.engine, app);
-                "click or arrows: move · type a move · m engine moves · u undo · n new · [ ] look back · t flip · z zoom · : command · ? help · q quit"
+                "click or arrows: move · type a move · m engine moves · u undo · n new · i analyse · [ ] look back · t flip · z zoom · : command · ? help · q quit"
             }
         };
         draw_status(frame, panels.status, app);
@@ -747,7 +754,54 @@ fn count_text(n: u64) -> String {
     }
 }
 
+/// The analysis in the engine panel: the search's totals, then each line on a row of its
+/// own, best first: its score, depth and moves (cut off at the panel's edge).
+fn draw_analysis(frame: &mut Frame, area: Rect, analysis: &Analysis, wanted: u32) {
+    let title = format!(
+        " Analysis · {wanted} line{} · i stops ",
+        if wanted == 1 { "" } else { "s" }
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let mut head = format!(
+        "depth {}  {} nodes",
+        analysis.depth,
+        count_text(analysis.nodes)
+    );
+    if let Some(nps) = analysis.nps {
+        head.push_str(&format!("  {}/s", count_text(nps)));
+    }
+    head.push_str(&format!("  {:.1}s", analysis.time_ms as f64 / 1000.0));
+    if !analysis.running() {
+        head.push_str("  (stopped)");
+    }
+    let mut lines = vec![Line::from(Span::styled(
+        head,
+        Style::default().add_modifier(Modifier::BOLD),
+    ))];
+    if analysis.lines.is_empty() {
+        lines.push(Line::from("Thinking…"));
+    }
+    for line in &analysis.lines {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:>6} ", score_text(line.score)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("d{:<3}", line.depth),
+                Style::default().add_modifier(Modifier::DIM),
+            ),
+            Span::raw(line.pv.join(" ")),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 fn draw_engine(frame: &mut Frame, area: Rect, app: &App) {
+    if let Some(analysis) = &app.analysis {
+        draw_analysis(frame, area, analysis, app.analysis_lines());
+        return;
+    }
     let block = Block::default().borders(Borders::ALL).title(" Engine ");
     let lines = match &app.thinking {
         Some(t) => {
@@ -794,6 +848,8 @@ fn zoom_summary(app: &App) -> String {
         }
     } else if app.browse.is_some() {
         parts.push("looking back · ] to return".into());
+    } else if app.analysis.is_some() {
+        parts.push(format!("{} to move", app.game.position().side_to_move()));
     } else {
         parts.push(match app.game.outcome() {
             Some(outcome) => rules::describe_outcome(outcome),
@@ -810,6 +866,20 @@ fn zoom_summary(app: &App) -> String {
                 clock_text(clocks.left(Color::Black, app.now))
             ));
         }
+    }
+    if let Some(best) = app.analysis.as_ref().and_then(|a| a.lines.first()) {
+        let moves: Vec<&str> = best
+            .pv
+            .iter()
+            .take(ZOOM_PV_MOVES)
+            .map(String::as_str)
+            .collect();
+        parts.push(format!(
+            "analysis {} d{} {}",
+            score_text(best.score),
+            best.depth,
+            moves.join(" ")
+        ));
     }
     parts.push("z panels ".into());
     parts.join(" · ")
@@ -844,6 +914,8 @@ Keys
   [ ]      look back through the game a move at a time (Home, End)
   t        turn the board around
   z        zoom: the board fills the screen (again for the panels)
+  i        analyse: the engine studies the board until i again; you
+           move for both sides, and in the PGN viewer it follows you
   :        type a command
   ?        this help
   q        quit
@@ -857,6 +929,7 @@ PGN viewer (cbtui --pgn <file>)
 Commands
   :play white|black|both|none   which sides the engine plays
   :level <n>|max                the engine's playing level
+  :lines <n>                    how many lines an analysis shows
   :time <ms>                    how long it thinks a move
   :clock <min>+<sec>|off        play to a clock (5+3), from the first move
   :resign  :draw                resign, or offer the engine a draw
@@ -903,6 +976,7 @@ mod tests {
             version: "1.2".into(),
             license: "MIT".into(),
             caps: Default::default(),
+            max_multipv: 1,
         };
         App::new(node, Settings::default()).unwrap()
     }
@@ -991,6 +1065,31 @@ mod tests {
         app.zoomed = true;
         let text = screen(&app, 100, 32);
         assert!(text.contains("W 5:00 B 5:00"), "{text}");
+    }
+
+    #[test]
+    fn an_analysis_shows_each_line_on_a_row_of_its_own() {
+        use crate::analysis::{Analysis, AnalysisLine};
+        use cnp::engine::Score;
+        let mut app = app();
+        let mut analysis = Analysis::new([false, true]);
+        analysis.depth = 18;
+        analysis.nodes = 2_500_000;
+        for (cp, pv) in [(35, "e4 e5 Nf3"), (28, "d4 d5"), (-10, "f3 e5")] {
+            analysis.lines.push(AnalysisLine {
+                score: Score::cp(cp),
+                depth: 18,
+                pv: pv.split(' ').map(String::from).collect(),
+            });
+        }
+        app.analysis = Some(analysis);
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("Analysis · 1 line"), "{text}");
+        assert!(text.contains("depth 18  2.5M nodes"), "{text}");
+        for row in ["+0.35 d18 e4 e5 Nf3", "+0.28 d18 d4 d5", "-0.10 d18 f3 e5"] {
+            assert!(text.contains(row), "{row}: {text}");
+        }
+        assert!(text.contains("i analyse"), "{text}");
     }
 
     #[test]

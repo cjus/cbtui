@@ -11,6 +11,7 @@
 //! - [`node`]: the engine process and the CNP conversation with it;
 //! - [`rules`]: legality, notation and game endings, from a rules library;
 //! - [`clock`]: chess clocks with an increment;
+//! - [`analysis`]: the engine's lines while it analyses the position on the board;
 //! - [`app`]: the state of a session, and what input and engine messages do to it;
 //! - [`review`]: a game read from PGN, with its variations, to step through;
 //! - [`ui`]: drawing it with [Ratatui](https://ratatui.rs);
@@ -20,6 +21,7 @@
 //! The binary (`src/main.rs`) ties them together: it runs the terminal, and a loop that
 //! takes key presses, mouse clicks and engine messages from one channel, one at a time.
 
+pub mod analysis;
 pub mod app;
 pub mod args;
 pub mod clock;
