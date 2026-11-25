@@ -1,0 +1,36 @@
+# cargo-about's settings for the third-party notices in cbtui's release downloads:
+# `scripts/notices.sh` runs it, for cbtui and for the cb2026 the downloads bundle.
+# See https://embark-studios.github.io/cargo-about/
+
+# The licences the crates are taken under, in order of preference: for a crate that offers a
+# choice ("MIT OR Apache-2.0"), the first one here that it offers. The same licences as
+# `deny.toml`'s `allow`, which `cargo deny check` enforces. The bundled cb2026 is built without
+# Syzygy tablebases, so no GPL crate is in it either.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+
+# The platforms the release builds (`.github/workflows/release.yml`). One file covers them all.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# What isn't in the program: build scripts' and tests' dependencies.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Unpublished crates (cbtui, cb2026's own): their licences are their LICENSE-MIT and
+# LICENSE-APACHE, which the download carries.
+private = { ignore = true }

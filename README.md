@@ -11,7 +11,13 @@ here.
 
 ![cbtui in Ghostty: a game against cb2026, with picture pieces filling the squares and the move list beside the board](docs/screenshot.png)
 
-## Install
+## Download
+
+Each [release](https://github.com/cjus/cbtui/releases) has downloads for macOS (Apple silicon
+and Intel), Linux (x86_64 and ARM64) and Windows, with the cb2026 engine in them: unpack one
+and run `./cbtui` (`.\cbtui.exe` on Windows). The release notes say more.
+
+## Install from source
 
 You need Rust 1.97 or newer, and an engine.
 

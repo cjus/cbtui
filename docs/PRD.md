@@ -120,5 +120,9 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Pondering (from #4): `:ponder on|off` and `--ponder`, off by default and saved. After its
       move the engine ponders on the reply it expects; a hit sends `engine/ponderHit`, a miss
       stops the ponder search and starts a new one (Carlos, 2026-11-25).
+- [x] Release downloads from a version tag (`.github/workflows/release.yml`, a draft release):
+      macOS (Apple silicon, Intel), Linux (x86_64, ARM64) and Windows, each with the cb2026
+      engine built without Syzygy so the whole download is MIT OR Apache-2.0; macOS binaries
+      signed and notarised once Carlos's Apple secrets are set (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).
