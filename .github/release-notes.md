@@ -22,8 +22,8 @@ cd cbtui-*/
 cbtui finds the cb2026 beside it. To run it from anywhere, put both on your `PATH`. Press `?`
 in cbtui for help; `cbtui --help` lists the options.
 
-If macOS says it can't check the program for malicious software (a download that wasn't
-signed), run `xattr -d com.apple.quarantine cbtui cb2026` in the folder, then start it again.
+The macOS programs are signed and notarised, so macOS checks them with Apple the first time
+they run, which needs a network connection.
 
 Both programs are `MIT OR Apache-2.0`. The cb2026 here is built without Syzygy tablebase
 probing; the engine's own releases, at https://github.com/cjus/chessengine/releases, have it.

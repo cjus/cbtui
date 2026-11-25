@@ -30,27 +30,34 @@ The targets: `aarch64-apple-darwin`, `x86_64-apple-darwin` (cross-compiled on Ap
    git tag v0.2.0 && git push origin v0.2.0
    ```
 
-3. When the Release workflow is done, open the draft under Releases, read the notes (from
-   `.github/release-notes.md`, with the merged PRs after them), and publish it.
+3. When the Release workflow is done, sign the macOS downloads on the Mac with the Developer
+   ID key: `scripts/mac-sign-release.sh v0.2.0` (below).
+4. Open the draft under Releases, read the notes (from `.github/release-notes.md`, with the
+   merged PRs after them), and publish it.
 
 A pull request that changes the workflow, the release notes or the notices builds every
-download without releasing, and `gh workflow run release.yml` does the same by hand (signing
-too, if it can).
+download without releasing, and `gh workflow run release.yml` does the same by hand.
 
 ## Signing for macOS
 
-macOS keeps an unsigned download from running until its quarantine flag is cleared. With
-these repository secrets (Settings → Secrets and variables → Actions), the workflow signs both
-binaries with a Developer ID and notarises them; without them it builds unsigned and warns:
+The workflow can't sign the macOS binaries: the Developer ID key is in a Mac's keychain, not on
+GitHub. On that Mac, once the draft is there:
 
-| Secret | What |
-| --- | --- |
-| `APPLE_CERTIFICATE` | The "Developer ID Application" certificate and its private key, exported from Keychain Access as a `.p12`, base64-encoded (`base64 -i cert.p12 \| pbcopy`) |
-| `APPLE_CERTIFICATE_PASSWORD` | The password the `.p12` was exported with |
-| `APPLE_SIGNING_IDENTITY` | The certificate's name, like `Developer ID Application: Name (TEAMID)` (`security find-identity -v -p codesigning`) |
-| `APPLE_ID` | The Apple ID of the developer account |
-| `APPLE_TEAM_ID` | Its ten-character team ID (developer.apple.com → Membership) |
-| `APPLE_APP_PASSWORD` | An app-specific password for that Apple ID (account.apple.com → Sign-In and Security) |
+```sh
+scripts/mac-sign-release.sh v0.2.0
+```
 
-A command-line program can't have its notarisation ticket stapled to it, so macOS looks it up
-online the first time the program runs.
+It downloads the two macOS packages, checks them against `SHA256SUMS.txt`, signs `cbtui` and
+`cb2026` in each with the hardened runtime, has Apple notarise all four, checks that macOS
+finds them notarised and that they still run, and replaces the two packages and
+`SHA256SUMS.txt` on the draft. Then publish the draft.
+
+It uses the keychain's "Developer ID Application" identity (Carlos's, as an individual) and
+the `cb2026-notary` notarytool profile, the same that cb2026's and Solrac's releases use; set
+`SIGN_IDENTITY` or `NOTARY_PROFILE` for others. A command-line program can't have its
+notarisation ticket stapled to it, so macOS looks it up online the first time the program
+runs.
+
+To try the signing without a release, `scripts/mac-sign-release.sh --trial <run-id>` signs a
+Release workflow run's macOS builds and checks they run, sending nothing to Apple and
+uploading nothing.
