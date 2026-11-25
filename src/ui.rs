@@ -703,6 +703,9 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
         Some(clocks) => format!("{} clock (cbtui times {})", clocks.control(), app.node.name),
         None => format!("{} ms a move", app.settings.movetime_ms),
     };
+    if app.settings.ponder && app.node.caps.ponder {
+        strength.push_str(" · pondering");
+    }
     if !app.settings.techniques.is_empty() {
         strength.push_str(&format!(
             " · {} technique{} switched",
@@ -1287,7 +1290,7 @@ fn draw_engine(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let block = Block::default().borders(Borders::ALL).title(" Engine ");
-    let lines = match &app.thinking {
+    let mut lines = match &app.thinking {
         Some(t) => {
             let mut head = format!(
                 "depth {}/{}  {}  {} nodes",
@@ -1309,11 +1312,18 @@ fn draw_engine(frame: &mut Frame, area: Rect, app: &App) {
             ]
         }
         None if app.searching() => vec![Line::from("Thinking…")],
+        None if app.pondering().is_some() => Vec::new(),
         None => vec![Line::from(Span::styled(
             "Waiting for the engine's turn.",
             Style::default().add_modifier(Modifier::DIM),
         ))],
     };
+    if let Some(expected) = app.pondering() {
+        lines.push(Line::from(Span::styled(
+            format!("Pondering: it expects {expected} and thinks on your time."),
+            Style::default().add_modifier(Modifier::ITALIC),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
         area,

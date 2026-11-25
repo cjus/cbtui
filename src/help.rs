@@ -56,6 +56,7 @@ Commands
   :tree [depth]                 walk a search tree of the board
   :time <ms>                    how long it thinks a move
   :clock <min>+<sec>|off        play to a clock (5+3)
+  :ponder on|off                the engine thinks on your time too
   :resign  :draw                resign, or offer the engine a draw
   :fen <FEN>                    a new game from a position
   :pgn <file>                   save the game

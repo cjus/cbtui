@@ -35,8 +35,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cnp::engine::{
-    EngineProgress, Evaluate, EvaluateParams, Levels, Progress, Root, RootParams, Search,
-    SearchParams, Stop, StopParams, Techniques, Tree, TreeNodePage, TreeNodeParams, TreeParams,
+    EngineProgress, Evaluate, EvaluateParams, Levels, PonderHit, PonderHitParams, Progress, Root,
+    RootParams, Search, SearchParams, Stop, StopParams, Techniques, Tree, TreeNodePage,
+    TreeNodeParams, TreeParams,
 };
 use cnp::lifecycle::{
     Exit, Initialize, InitializeParams, InitializeResult, PROTOCOL_VERSION, Shutdown, Software,
@@ -254,6 +255,9 @@ pub trait Engine {
     fn search(&mut self, params: &SearchParams) -> Result<i64, String>;
     /// Sends `engine/stop` for the search with this id.
     fn stop(&mut self, id: i64) -> Result<(), String>;
+    /// Sends `engine/ponderHit` for the ponder search with this id: the move it expected was
+    /// played.
+    fn ponder_hit(&mut self, id: i64) -> Result<(), String>;
     /// Sends `engine/evaluate`, returning the request's id.
     fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String>;
     /// Sends `engine/tree`, returning the request's id.
@@ -269,6 +273,11 @@ impl Engine for Node {
 
     fn stop(&mut self, id: i64) -> Result<(), String> {
         self.request::<Stop>(&StopParams { id: id.into() })
+            .map(|_| ())
+    }
+
+    fn ponder_hit(&mut self, id: i64) -> Result<(), String> {
+        self.request::<PonderHit>(&PonderHitParams { id: id.into() })
             .map(|_| ())
     }
 
@@ -296,6 +305,10 @@ impl Engine for NoEngine {
     }
 
     fn stop(&mut self, _id: i64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn ponder_hit(&mut self, _id: i64) -> Result<(), String> {
         Ok(())
     }
 

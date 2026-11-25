@@ -65,6 +65,8 @@ pub struct Config {
     pub zoom: Option<bool>,
     /// Whether Black is at the bottom.
     pub flip: Option<bool>,
+    /// Whether the engine thinks on the person's time.
+    pub ponder: Option<bool>,
 }
 
 impl Config {
@@ -132,6 +134,7 @@ impl Config {
             }
             "zoom" => self.zoom = Some(parse_on(value).ok_or_else(|| bad("on or off"))?),
             "flip" => self.flip = Some(parse_on(value).ok_or_else(|| bad("on or off"))?),
+            "ponder" => self.ponder = Some(parse_on(value).ok_or_else(|| bad("on or off"))?),
             _ => return Err(format!("`{key}` isn't a setting")),
         }
         Ok(())
@@ -157,6 +160,9 @@ impl Config {
         if let Some(theme) = self.theme {
             settings.theme = theme;
         }
+        if let Some(ponder) = self.ponder {
+            settings.ponder = ponder;
+        }
         settings
     }
 
@@ -177,6 +183,7 @@ impl Config {
             pieces: Some(pieces),
             zoom: Some(app.zoomed),
             flip: Some(app.flipped),
+            ponder: Some(settings.ponder),
         }
     }
 
@@ -219,6 +226,9 @@ impl Config {
         }
         if let Some(flip) = self.flip {
             put("flip", on_name(flip).to_string());
+        }
+        if let Some(ponder) = self.ponder {
+            put("ponder", on_name(ponder).to_string());
         }
         lines.join("\n") + "\n"
     }
@@ -293,6 +303,7 @@ theme = dark
 pieces = letters
 zoom = on
 flip = off
+ponder = on
 ";
         let (config, warnings) = Config::parse(text);
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -303,6 +314,7 @@ flip = off
         assert_eq!(config.clock, Some(Some(TimeControl::parse("5+3").unwrap())));
         assert_eq!(config.theme, Some(Theme::Dark));
         assert_eq!(config.zoom, Some(true));
+        assert_eq!(config.ponder, Some(true));
         // Written out and read again, nothing changes.
         let (again, _) = Config::parse(&config.to_text());
         assert_eq!(again, config);

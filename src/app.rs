@@ -43,6 +43,16 @@
 //! judgement. A resignation
 //! or an agreed draw can be taken back (`u`), and the game goes on.
 //!
+//! ## Pondering
+//!
+//! With `:ponder on` and an engine that can (capability `ponder`), the engine thinks on the
+//! person's time. Its answer names the reply it expects (`ponder`); cbtui at once sends a
+//! ponder search of the position after that reply ([`App::pondering`]). If the person plays
+//! it, `engine/ponderHit` turns the ponder search into the engine's search, which keeps what
+//! it found, and its time counts from the hit. If they play anything else, the ponder search
+//! is stopped, its answer ignored, and a new search starts. A ponder search that ends on its
+//! own (at the engine's time limit) is forgotten.
+//!
 //! ## The engine's turn
 //!
 //! After every change, [`App`] checks whether the engine plays the side to move. If so, and no
@@ -187,6 +197,8 @@ pub struct Settings {
     pub techniques: BTreeMap<String, bool>,
     /// The board's colours.
     pub theme: Theme,
+    /// Whether the engine thinks on the person's time, when it can.
+    pub ponder: bool,
 }
 
 impl Default for Settings {
@@ -200,6 +212,7 @@ impl Default for Settings {
             lines: DEFAULT_LINES,
             techniques: BTreeMap::new(),
             theme: Theme::default(),
+            ponder: false,
         }
     }
 }
@@ -253,6 +266,15 @@ pub enum Overlay {
         /// The highlighted technique.
         cursor: usize,
     },
+}
+
+/// A ponder search: the engine thinking on the person's time about the reply it expects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Ponder {
+    /// The `engine/search` request's id.
+    id: i64,
+    /// The reply it expects.
+    expected: Move,
 }
 
 /// A search the app is waiting on.
@@ -334,6 +356,8 @@ pub struct App {
     /// Set when the user asks to leave.
     pub quit: bool,
     pending: Option<Pending>,
+    /// The ponder search running on the person's time, if any.
+    ponder: Option<Ponder>,
     /// The `engine/levels` request's id, until it is answered.
     levels_request: Option<i64>,
     /// The `engine/techniques` request's id, until it is answered.
@@ -394,6 +418,7 @@ impl App {
             disconnected: false,
             quit: false,
             pending: None,
+            ponder: None,
             levels_request: None,
             techniques_request: None,
             evaluate_request: None,
@@ -643,6 +668,12 @@ impl App {
     /// Whether a search is running.
     pub fn searching(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// The reply the engine is pondering on, in SAN, while it thinks on the person's time.
+    pub fn pondering(&self) -> Option<String> {
+        let ponder = self.ponder?;
+        Some(self.game.position().to_san(ponder.expected))
     }
 
     /// Whether the engine plays the side to move.
@@ -960,6 +991,23 @@ impl App {
         }
     }
 
+    /// Turns pondering on or off; off stops a ponder search that's running.
+    fn set_ponder(&mut self, on: bool, engine: &mut dyn Engine) {
+        if on && !self.node.caps.ponder {
+            self.status = format!("{} can't think on your time.", self.node.name);
+            return;
+        }
+        self.settings.ponder = on;
+        if !on && let Some(ponder) = self.ponder.take() {
+            let _ = engine.stop(ponder.id);
+        }
+        self.status = if on {
+            format!("{} thinks on your time from its next move.", self.node.name)
+        } else {
+            format!("{} thinks only on its own time.", self.node.name)
+        };
+    }
+
     /// Colours the board with `theme`.
     fn set_theme(&mut self, theme: Theme) {
         self.settings.theme = theme;
@@ -1222,6 +1270,12 @@ impl App {
             );
             return;
         }
+        // The engine pondered on a reply: this move is a hit, or the ponder search goes.
+        let ponder = self.ponder.take();
+        let hit = ponder.filter(|p| p.expected == mv);
+        if let Some(missed) = ponder.filter(|p| p.expected != mv) {
+            let _ = engine.stop(missed.id);
+        }
         if self.searching() {
             // A search started with `g` for this side: the person moved instead.
             self.cancel_search(engine);
@@ -1230,7 +1284,77 @@ impl App {
         if self.play(mv, None) {
             self.selected = None;
             self.status = format!("You played {san}.");
+            if let Some(hit) = hit {
+                self.ponder_hit(hit, engine);
+            }
             self.after_move(engine);
+        } else if let Some(hit) = hit {
+            let _ = engine.stop(hit.id);
+        }
+    }
+
+    /// The person played the reply the engine pondered on: its ponder search becomes the
+    /// search for its move, unless the move ended the game.
+    fn ponder_hit(&mut self, hit: Ponder, engine: &mut dyn Engine) {
+        if self.game.outcome().is_some() {
+            let _ = engine.stop(hit.id);
+            return;
+        }
+        match engine.ponder_hit(hit.id) {
+            Ok(()) => {
+                self.pending = Some(Pending {
+                    id: hit.id,
+                    ply: self.game.moves().len(),
+                });
+                self.thinking = None;
+                self.root = None;
+                self.status
+                    .push_str(&format!(" {} expected it.", self.node.name));
+            }
+            // Not a hit after all: the engine's turn starts a search as usual.
+            Err(_) => {
+                let _ = engine.stop(hit.id);
+            }
+        }
+    }
+
+    /// After the engine's move, starts it pondering on the reply it expects (`expected`, in
+    /// coordinate notation), if pondering is on, it can, and it's the person's turn.
+    fn start_ponder(&mut self, expected: Option<&str>, engine: &mut dyn Engine) {
+        let wanted = self.settings.ponder
+            && self.node.caps.ponder
+            && self.has_engine
+            && !self.disconnected
+            && self.analysis.is_none()
+            && self.review.is_none()
+            && self.game.outcome().is_none()
+            && !self.engine_to_move()
+            && !self.searching();
+        if !wanted {
+            return;
+        }
+        let Some(text) = expected else {
+            return;
+        };
+        let Some(reply) = self.game.position().parse_uci_move(text) else {
+            return;
+        };
+        let mut params = self.search_params();
+        params.position.moves.push(rules::to_uci(reply));
+        params.ponder = true;
+        // Its time is the engine's, counted from the hit: without a clock it can read, the
+        // share of the engine's own clock, not the person's.
+        let engine_side = !self.game.position().side_to_move();
+        if params.limits.clock.is_none()
+            && let Some(clocks) = &self.clocks
+        {
+            params.limits.time_ms = Some(clock_share(clocks, engine_side, self.now));
+        }
+        if let Ok(id) = engine.search(&params) {
+            self.ponder = Some(Ponder {
+                id,
+                expected: reply,
+            });
         }
     }
 
@@ -1283,6 +1407,10 @@ impl App {
                 Ok(depth) if depth >= 1 => self.open_tree(Some(depth), engine),
                 _ => self.status = "Usage: :tree [depth]".into(),
             },
+            ("ponder", []) => self.set_ponder(!self.settings.ponder, engine),
+            ("ponder", ["on"]) => self.set_ponder(true, engine),
+            ("ponder", ["off"]) => self.set_ponder(false, engine),
+            ("ponder", _) => self.status = "Usage: :ponder on|off".into(),
             ("resign", _) => self.resign(engine),
             ("draw", _) => self.offer_draw(engine),
             ("clock", [text]) => self.set_clock(text),
@@ -1754,6 +1882,10 @@ impl App {
             self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
             return;
         }
+        // An engine may search only one position at a time.
+        if let Some(ponder) = self.ponder.take() {
+            let _ = engine.stop(ponder.id);
+        }
         match engine.search(&self.search_params()) {
             Ok(id) => {
                 self.pending = Some(Pending {
@@ -1787,9 +1919,8 @@ impl App {
             }
             // An engine that can't read a clock gets a share of what's left, and the increment.
             Some(clocks) => {
-                let left = clocks.left(self.game.position().side_to_move(), self.now);
-                let share = left / CLOCK_FALLBACK_MOVES + clocks.control().increment_ms;
-                limits.time_ms = Some(share.min(left.saturating_sub(CLOCK_SAFETY_MS)).max(1));
+                let side = self.game.position().side_to_move();
+                limits.time_ms = Some(clock_share(clocks, side, self.now));
             }
             None => limits.time_ms = Some(self.settings.movetime_ms),
         }
@@ -1818,6 +1949,9 @@ impl App {
     fn cancel_search(&mut self, engine: &mut dyn Engine) {
         if let Some(pending) = self.pending.take() {
             let _ = engine.stop(pending.id);
+        }
+        if let Some(ponder) = self.ponder.take() {
+            let _ = engine.stop(ponder.id);
         }
     }
 
@@ -1969,6 +2103,11 @@ impl App {
             }
             return;
         }
+        if self.ponder.is_some_and(|p| p.id == id) {
+            // A ponder search that ended on its own: there's nothing to hit any more.
+            self.ponder = None;
+            return;
+        }
         let Some(pending) = self.pending.filter(|pending| pending.id == id) else {
             // A stale search, or a stop's acknowledgement.
             return;
@@ -2041,8 +2180,17 @@ impl App {
                 format!("{} played {san}.", self.node.name)
             };
             self.after_move(engine);
+            self.start_ponder(result.ponder.as_deref(), engine);
         }
     }
+}
+
+/// What an engine that can't read a clock is given for a move: a share of `side`'s time left
+/// ([`CLOCK_FALLBACK_MOVES`]) and the increment, never all of it ([`CLOCK_SAFETY_MS`]).
+fn clock_share(clocks: &Clocks, side: Color, now: Instant) -> u64 {
+    let left = clocks.left(side, now);
+    let share = left / CLOCK_FALLBACK_MOVES + clocks.control().increment_ms;
+    share.min(left.saturating_sub(CLOCK_SAFETY_MS)).max(1)
 }
 
 /// Whether an engine whose search scored `score` (from its own point of view) at move
@@ -2097,6 +2245,7 @@ mod tests {
         evaluations: Vec<EvaluateParams>,
         trees: Vec<cnp::engine::TreeParams>,
         tree_nodes: Vec<cnp::engine::TreeNodeParams>,
+        ponder_hits: Vec<i64>,
     }
 
     impl Engine for FakeEngine {
@@ -2106,6 +2255,10 @@ mod tests {
         }
         fn stop(&mut self, id: i64) -> Result<(), String> {
             self.stops.push(id);
+            Ok(())
+        }
+        fn ponder_hit(&mut self, id: i64) -> Result<(), String> {
+            self.ponder_hits.push(id);
             Ok(())
         }
         fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String> {
@@ -2947,6 +3100,115 @@ mod tests {
             "{}",
             app.status
         );
+    }
+
+    /// The engine's answer `best`, expecting the reply `ponder`.
+    fn answer_pondering(id: i64, best: &str, ponder: &str) -> NodeEvent {
+        NodeEvent::Response(Response::ok::<proto::Search>(
+            id.into(),
+            &serde_json::from_value::<SearchResult>(serde_json::json!({
+                "bestMove": best, "ponder": ponder, "score": {"cp": -30}, "pv": [best, ponder],
+                "depth": 9, "selDepth": 12, "nodes": 1000, "timeMs": 10, "stopped": false
+            }))
+            .unwrap(),
+        ))
+    }
+
+    fn pondering_app() -> App {
+        let mut n = node();
+        n.caps.ponder = true;
+        let settings = Settings {
+            ponder: true,
+            ..Settings::default()
+        };
+        App::new(n, settings).unwrap()
+    }
+
+    #[test]
+    fn the_engine_ponders_on_the_reply_it_expects_and_a_hit_keeps_its_search() {
+        let (mut app, mut engine) = (pondering_app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        // At once, a ponder search of the position after the reply it expects.
+        assert_eq!(engine.searches.len(), 2);
+        let ponder = &engine.searches[1];
+        assert!(ponder.ponder);
+        assert_eq!(ponder.position.moves, ["e2e4", "e7e5", "g1f3"]);
+        assert_eq!(app.pondering().as_deref(), Some("Nf3"));
+        assert!(!app.searching(), "it's the person's turn");
+
+        // The person plays it: a hit, and no new search.
+        type_line(&mut app, &mut engine, "Nf3");
+        assert_eq!(engine.ponder_hits, [102]);
+        assert_eq!(engine.searches.len(), 2);
+        assert!(app.searching());
+        assert!(app.status.contains("expected it"), "{}", app.status);
+        // Its answer is the engine's move.
+        app.handle_node(answer(102, "b8c6"), &mut engine);
+        assert_eq!(app.game.moves().last().unwrap().san, "Nc6");
+    }
+
+    #[test]
+    fn a_miss_stops_the_ponder_search_and_starts_another() {
+        let (mut app, mut engine) = (pondering_app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        type_line(&mut app, &mut engine, "d4");
+        assert!(engine.ponder_hits.is_empty());
+        assert_eq!(engine.stops, [102]);
+        assert_eq!(engine.searches.len(), 3);
+        assert!(!engine.searches[2].ponder);
+        assert_eq!(engine.searches[2].position.moves, ["e2e4", "e7e5", "d2d4"]);
+        // The stopped ponder search's answer is ignored.
+        app.handle_node(answer(102, "b8c6"), &mut engine);
+        assert_eq!(app.game.moves().len(), 3);
+        assert_eq!(app.pondering(), None);
+    }
+
+    #[test]
+    fn a_ponder_search_that_ends_on_its_own_and_a_takeback_both_end_it() {
+        let (mut app, mut engine) = (pondering_app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        // It ended at the engine's time limit: nothing to hit, so Nf3 starts a search.
+        app.handle_node(answer(102, "b8c6"), &mut engine);
+        assert_eq!(app.pondering(), None);
+        type_line(&mut app, &mut engine, "Nf3");
+        assert!(engine.ponder_hits.is_empty());
+        assert_eq!(engine.searches.len(), 3);
+
+        let (mut app, mut engine) = (pondering_app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(engine.stops, [102]);
+        assert_eq!(app.pondering(), None);
+        // `:ponder off` stops one too.
+        let (mut app, mut engine) = (pondering_app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        type_line(&mut app, &mut engine, ":ponder off");
+        assert_eq!(engine.stops, [102]);
+        assert!(!app.settings.ponder);
+    }
+
+    #[test]
+    fn an_engine_that_cant_ponder_doesnt_and_says_so() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":ponder on");
+        assert!(!app.settings.ponder);
+        assert!(
+            app.status.contains("can't think on your time"),
+            "{}",
+            app.status
+        );
+        // With pondering off, nothing is sent after the engine's move.
+        let mut n = node();
+        n.caps.ponder = true;
+        let mut app = App::new(n, Settings::default()).unwrap();
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_pondering(101, "e7e5", "g1f3"), &mut engine);
+        assert_eq!(engine.searches.len(), 1);
     }
 
     #[test]

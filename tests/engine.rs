@@ -19,6 +19,15 @@ fn engine() -> Option<String> {
     engine
 }
 
+/// Types `text` and Enter, as a person would.
+fn type_line(app: &mut App, node: &mut Node, text: &str) {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    for c in text.chars() {
+        app.handle_key(KeyEvent::from(KeyCode::Char(c)), node);
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter), node);
+}
+
 /// Hands the app what the engine sends until `done`, failing after 20 seconds.
 fn wait_for(
     app: &mut App,
@@ -188,5 +197,34 @@ fn a_search_tree_opens_and_walks() {
         app.tree.as_ref().unwrap().levels.len() == 2
     });
     assert!(!app.tree.as_ref().unwrap().level().children.is_empty());
+    node.shutdown();
+}
+
+#[test]
+fn the_engine_ponders_and_a_hit_becomes_its_move() {
+    let Some(engine) = engine() else {
+        return;
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut node = Node::spawn(&engine, &["--cnp".to_string()], move |event| {
+        let _ = tx.send(event);
+    })
+    .unwrap();
+    let summary = NodeSummary::from_info(node.info());
+    assert!(summary.caps.ponder, "cb2026 ponders");
+    let settings = Settings {
+        movetime_ms: 200,
+        ponder: true,
+        ..Settings::default()
+    };
+    let mut app = App::new(summary, settings).unwrap();
+    // The person plays e4; the engine answers and ponders on the reply it expects.
+    type_line(&mut app, &mut node, "e4");
+    wait_for(&mut app, &mut node, &rx, |app| app.game.moves().len() == 2);
+    let expected = app.pondering().expect("it ponders on a reply");
+    // Playing that reply is a hit: the engine's answer comes without a new search.
+    type_line(&mut app, &mut node, &expected);
+    assert!(app.status.contains("expected it"), "{}", app.status);
+    wait_for(&mut app, &mut node, &rx, |app| app.game.moves().len() == 4);
     node.shutdown();
 }

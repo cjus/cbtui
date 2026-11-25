@@ -99,11 +99,19 @@ changes the picture.
   one of them changes; the engine (`engine`, `engine-arg`) is read but only written back as
   read. A PGN viewer or an analysis doesn't save the sides it sets for a while. A bad line
   is skipped with a note on the status line. Tried in tmux with a scratch file (2026-11-25).
+- **Pondering: built** (twentieth PR), from #4. `:ponder on|off` or `--ponder on|off` (off by
+  default, saved in `~/.cbtuirc`). After the engine's move, if its answer names the reply it
+  expects, cbtui sends a ponder search of the position after it; the engine panel says what
+  it expects. The person playing that reply sends `engine/ponderHit`, and the ponder search
+  becomes the engine's search; another move stops it and starts a new one. Any other search
+  stops it first, since an engine searches one position at a time. Tried in tmux with cb2026
+  (2026-11-25): a hit on 2. d4 answered 2 s after it, with 21.4M nodes behind it; a miss
+  (Nc3 for Nd2) started afresh.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 119 unit tests (the app against a fake engine, the CNP client against a fake node over
-  pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
+- Tests: 123 unit tests (the app against a fake engine, the CNP client against a fake node over
+  pipes, the layout and mouse mapping with Ratatui's test backend), and 5 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
 
@@ -120,8 +128,8 @@ that chessengine pins there.
 
 ## Next
 
-Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
-root-move restriction, depth limits): Carlos to decide in #4.
+Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, root-move
+restriction, depth limits): Carlos to decide in #4. Pondering is done.
 
 Every milestone in `docs/PRD.md` is built. What's left is the "Later" row (engines on
 another computer, a UCI backend; themes are done), to be decided now that M3 is done. Later for the
