@@ -273,7 +273,8 @@ fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette, piece
             let (file, rank) = screen_to_board(column, line, app.flipped);
             let square = rules::square(file, rank).expect("on the board");
             let light = (file + rank) % 2 == 1;
-            let is_last = last.is_some_and(|mv| mv.from() == square || mv.to() == square);
+            let is_last =
+                last.is_some_and(|mv| mv.from() == square || rules::destination(mv) == square);
             let piece = position.piece_at(square);
             let mut bg = match (light, is_last) {
                 (true, false) => palette.light,
