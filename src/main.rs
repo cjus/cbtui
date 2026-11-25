@@ -108,6 +108,12 @@ fn main() -> ExitCode {
     {
         app.expect_levels(id);
     }
+    if let Some(node) = node.as_mut()
+        && app.node.caps.techniques
+        && let Ok(id) = node.techniques()
+    {
+        app.expect_techniques(id);
+    }
     app.start(engine_of(&mut node, &mut NoEngine));
 
     let mut terminal = ratatui::init();

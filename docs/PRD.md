@@ -66,7 +66,7 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 | --- | --- | --- |
 | **M1 · Playable** | CNP connection; board with mouse, keyboard and typed moves; engine plays either side, both or none; levels (if the engine has them) and time per move; live thinking; move list; undo, new game, FEN, flip; PGN save; help | A full game against cb2026 in a terminal, with no illegal moves and a clean exit |
 | **M2 · Clocks and game flow** | Chess clocks with increment (CNP `clock` limits), resign and draw offers, PGN load (the PGN viewer), promotion picker, move-list navigation (`[` `]`) | A timed game against cb2026 to the end |
-| M3 · Analysis | Infinite analysis with MultiPV (capabilities `multipv`; done), the evaluation broken into terms (`engine/evaluate`), technique switches (`engine/techniques`), each shown only when the engine has it | Analysing a position shows several lines and the evaluation's terms with cb2026 |
+| **M3 · Analysis** | Infinite analysis with MultiPV (capabilities `multipv`), the evaluation broken into terms (`engine/evaluate`), technique switches (`engine/techniques`), each shown only when the engine has it | Analysing a position shows several lines and the evaluation's terms with cb2026 |
 | M4 · Look inside | Following the search at its root (`engine/root`) and browsing its search tree (`engine/tree`, `engine/treeNode`), generic views of what the engine reports | The tree browser opens a cb2026 search and walks it |
 | Later | Engines on another computer through cb2026's network client; a UCI backend; themes | Decided when M3 is done |
 
@@ -95,5 +95,9 @@ program; cbtui shows the licence it reports, with its whole version, on the help
       up to the position on the board, so the engine sees repetitions, and asks for every
       progress report when it wants several lines, since an engine that throttles all its
       lines together reports only the best one (2026-11-24).
+- [x] The evaluation is `v` (and `:eval`), shown over the board: the score, each term for
+      White and Black and their difference, in pawns, settling captures first when the engine
+      can (`quiet`). Techniques are `:techniques`: switches away from the defaults go with every
+      search, a game's and an analysis's (2026-11-24).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

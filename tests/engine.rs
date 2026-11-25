@@ -96,3 +96,40 @@ fn a_takeback_mid_search_lets_the_next_search_start_at_once() {
     );
     node.shutdown();
 }
+
+#[test]
+fn an_analysis_finds_several_lines_and_the_evaluation_has_terms() {
+    let Some(engine) = engine() else {
+        return;
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut node = Node::spawn(&engine, &["--cnp".to_string()], move |event| {
+        let _ = tx.send(event);
+    })
+    .unwrap();
+    let summary = NodeSummary::from_info(node.info());
+    assert!(summary.caps.multipv && summary.caps.evaluate && summary.caps.techniques);
+    let mut app = App::new(summary, Settings::default()).unwrap();
+    app.expect_techniques(node.techniques().unwrap());
+    app.command("analyse", &mut node);
+    app.command("eval", &mut node);
+
+    // Three lines (the default), every technique listed, and the terms of the evaluation.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let lines = app.analysis.as_ref().map_or(0, |a| a.lines.len());
+        if lines >= 3 && app.techniques.is_some() && app.evaluation.is_some() {
+            break;
+        }
+        let event = rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the engine keeps reporting");
+        app.handle_node(event, &mut node);
+        assert!(!app.disconnected, "{}", app.status);
+    }
+    assert!(!app.evaluation.as_ref().unwrap().result.terms.is_empty());
+    assert!(!app.techniques.as_ref().unwrap().is_empty());
+    app.command("analyse", &mut node);
+    assert!(app.analysis.is_none());
+    node.shutdown();
+}

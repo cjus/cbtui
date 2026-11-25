@@ -49,12 +49,13 @@
 //! repetitions) and remembers the request id and the game's length. When the answer comes, it
 //! is played only if both still match: a takeback or a new game in between makes it stale.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::Instant;
 
 use cnp::engine::{
-    self as proto, EngineCapabilities, LevelsResult, Score, ScoreValue, SearchLimits, SearchParams,
-    SideClock, Strength,
+    self as proto, EngineCapabilities, EvaluateParams, EvaluateResult, LevelsResult, Score,
+    ScoreValue, SearchLimits, SearchParams, SideClock, Strength, Technique,
 };
 use cnp::{Response, code};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -83,6 +84,9 @@ pub const MAX_MOVETIME_MS: u64 = 600_000;
 /// What cbtui says when asked to use an engine it doesn't have.
 const NO_ENGINE: &str =
     "There's no engine. Start cbtui with --engine <path> (or $CBTUI_ENGINE) to play one.";
+
+/// How far Page Up and Page Down move in the techniques.
+const TECHNIQUES_PAGE: usize = 10;
 
 /// What the status line says while the promotion picker is open.
 const PROMOTE: &str =
@@ -154,6 +158,8 @@ pub struct Settings {
     pub clock: Option<TimeControl>,
     /// How many lines an analysis asks for, if the engine can find several.
     pub lines: u32,
+    /// Search techniques switched away from their defaults, by id, sent with every search.
+    pub techniques: BTreeMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -165,6 +171,7 @@ impl Default for Settings {
             fen: None,
             clock: None,
             lines: DEFAULT_LINES,
+            techniques: BTreeMap::new(),
         }
     }
 }
@@ -195,6 +202,29 @@ pub struct Promotion {
     pub to: Square,
     /// The legal promotions, queen first ([`rules::PROMOTION_PIECES`]).
     pub choices: Vec<Move>,
+}
+
+/// The engine's evaluation of a position, term by term (`engine/evaluate`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Evaluation {
+    /// Which position it is, for the title: `Start`, `After 12. Nf3`.
+    pub label: String,
+    /// The position evaluated, to write the settling moves in SAN.
+    pub position: Position,
+    /// What the engine said.
+    pub result: EvaluateResult,
+}
+
+/// A window over the board that takes the keys until it closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overlay {
+    /// The evaluation, term by term ([`App::evaluation`]).
+    Evaluation,
+    /// The search techniques, to switch on and off; the highlighted one's index.
+    Techniques {
+        /// The highlighted technique.
+        cursor: usize,
+    },
 }
 
 /// A search the app is waiting on.
@@ -236,6 +266,12 @@ pub struct App {
     pub draw_offered: bool,
     /// The engine analysing the position on the board (`i`), when it is.
     pub analysis: Option<Analysis>,
+    /// The latest evaluation the engine sent (`v`).
+    pub evaluation: Option<Evaluation>,
+    /// The search techniques the engine can switch, once it has said them.
+    pub techniques: Option<Vec<Technique>>,
+    /// The window open over the board, if any.
+    pub overlay: Option<Overlay>,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -261,6 +297,10 @@ pub struct App {
     pending: Option<Pending>,
     /// The `engine/levels` request's id, until it is answered.
     levels_request: Option<i64>,
+    /// The `engine/techniques` request's id, until it is answered.
+    techniques_request: Option<i64>,
+    /// The `engine/evaluate` request's id and what it evaluates, until it is answered.
+    evaluate_request: Option<(i64, String, Position)>,
     /// Counts games, to tell the engine when a new one starts (the `game` hint).
     game_number: u32,
     /// With clocks: both sides' time before each move of the game, to put back on a takeback.
@@ -293,6 +333,9 @@ impl App {
             now: Instant::now(),
             draw_offered: false,
             analysis: None,
+            evaluation: None,
+            techniques: None,
+            overlay: None,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -306,6 +349,8 @@ impl App {
             quit: false,
             pending: None,
             levels_request: None,
+            techniques_request: None,
+            evaluate_request: None,
             game_number: 1,
             clock_history: Vec::new(),
         })
@@ -508,6 +553,20 @@ impl App {
         self.levels_request = Some(id);
     }
 
+    /// Records that `engine/techniques` was sent with this id.
+    pub fn expect_techniques(&mut self, id: i64) {
+        self.techniques_request = Some(id);
+    }
+
+    /// Whether technique `id` is on in searches: as switched, else its default.
+    pub fn technique_on(&self, technique: &Technique) -> bool {
+        self.settings
+            .techniques
+            .get(&technique.id)
+            .copied()
+            .unwrap_or(technique.default)
+    }
+
     /// Whether a search is running.
     pub fn searching(&self) -> bool {
         self.pending.is_some()
@@ -593,6 +652,10 @@ impl App {
             self.show_help = false;
             return;
         }
+        if let Some(overlay) = self.overlay {
+            self.overlay_key(overlay, key.code);
+            return;
+        }
         if self.promotion.is_some() {
             self.promotion_key(key.code, engine);
             return;
@@ -614,6 +677,7 @@ impl App {
             KeyCode::Char('t') => self.flipped = !self.flipped,
             KeyCode::Char('z') => self.zoomed = !self.zoomed,
             KeyCode::Char('i') => self.toggle_analysis(engine),
+            KeyCode::Char('v') => self.evaluate(engine),
             // `m`: the engine moves (now, if it is thinking already).
             KeyCode::Char('m') if self.searching() => self.move_now(engine),
             KeyCode::Char('m') => self.go(engine),
@@ -630,6 +694,108 @@ impl App {
             }
             KeyCode::Esc => self.selected = None,
             _ => {}
+        }
+    }
+
+    /// An overlay's keys. The evaluation closes on any key. The techniques move with the
+    /// arrows (and Page Up, Page Down, Home, End), switch with Space or Enter, go back to
+    /// their default with `d`, and close with Esc or `q`.
+    fn overlay_key(&mut self, overlay: Overlay, code: KeyCode) {
+        let Overlay::Techniques { cursor } = overlay else {
+            self.overlay = None;
+            return;
+        };
+        let count = self.techniques.as_ref().map_or(0, Vec::len);
+        let last = count.saturating_sub(1);
+        let moved = match code {
+            KeyCode::Up | KeyCode::Char('k') => cursor.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => (cursor + 1).min(last),
+            KeyCode::PageUp => cursor.saturating_sub(TECHNIQUES_PAGE),
+            KeyCode::PageDown => (cursor + TECHNIQUES_PAGE).min(last),
+            KeyCode::Home => 0,
+            KeyCode::End => last,
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                self.switch_technique(cursor, false);
+                cursor
+            }
+            KeyCode::Char('d') => {
+                self.switch_technique(cursor, true);
+                cursor
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.overlay = None;
+                return;
+            }
+            _ => cursor,
+        };
+        self.overlay = Some(Overlay::Techniques { cursor: moved });
+    }
+
+    /// Switches technique number `index`: flips it, or with `to_default`, puts it back to its
+    /// default. Only switches away from the defaults are kept, and sent.
+    fn switch_technique(&mut self, index: usize, to_default: bool) {
+        let Some(technique) = self.techniques.as_ref().and_then(|t| t.get(index)).cloned() else {
+            return;
+        };
+        let on = if to_default {
+            technique.default
+        } else {
+            !self.technique_on(&technique)
+        };
+        if on == technique.default {
+            self.settings.techniques.remove(&technique.id);
+        } else {
+            self.settings.techniques.insert(technique.id.clone(), on);
+        }
+        self.status = format!(
+            "{} {} for the next search{}.",
+            technique.name,
+            if on { "on" } else { "off" },
+            match self.settings.techniques.len() {
+                0 => " (every technique at its default)".to_string(),
+                n => format!(" ({n} switched from the defaults)"),
+            }
+        );
+    }
+
+    /// Opens the techniques, if the engine has them.
+    fn open_techniques(&mut self) {
+        if !self.node.caps.techniques {
+            self.status = format!("{} has no techniques to switch.", self.node.name);
+            return;
+        }
+        if self.techniques.is_none() {
+            self.status = format!("{} hasn't said its techniques yet.", self.node.name);
+            return;
+        }
+        self.overlay = Some(Overlay::Techniques { cursor: 0 });
+    }
+
+    /// Asks the engine to evaluate the position on the board, term by term.
+    fn evaluate(&mut self, engine: &mut dyn Engine) {
+        if !self.has_engine {
+            self.status = NO_ENGINE.into();
+            return;
+        }
+        if !self.node.caps.evaluate {
+            self.status = format!("{} can't break its evaluation into terms.", self.node.name);
+            return;
+        }
+        let game = self.shown_game();
+        let mut params = EvaluateParams::new(
+            proto::Position::fen(game.start().to_fen()).with_moves(rules::game_moves_uci(&game)),
+        );
+        // Settle the captures first, when it can, so a piece about to be taken isn't counted.
+        params.quiet = self.node.caps.quiet;
+        let label = self
+            .shown_move_label()
+            .map_or("Start".to_string(), |label| format!("After {label}"));
+        match engine.evaluate(&params) {
+            Ok(id) => {
+                self.evaluate_request = Some((id, label, game.position().clone()));
+                self.status = "Evaluating…".into();
+            }
+            Err(e) => self.status = e,
         }
     }
 
@@ -758,6 +924,9 @@ impl App {
 
     /// Reacts to a click on `square`.
     pub fn handle_click(&mut self, square: Square, engine: &mut dyn Engine) {
+        if self.overlay.take().is_some() {
+            return;
+        }
         self.cursor = square;
         self.cursor_visible = false;
         self.handle_square(square, engine);
@@ -892,6 +1061,8 @@ impl App {
             },
             ("analyse" | "analyze" | "an", _) => self.toggle_analysis(engine),
             ("lines", [n]) => self.set_lines(n),
+            ("eval" | "evaluate", _) => self.evaluate(engine),
+            ("techniques" | "tech", _) => self.open_techniques(),
             ("resign", _) => self.resign(engine),
             ("draw", _) => self.offer_draw(engine),
             ("clock", [text]) => self.set_clock(text),
@@ -1126,7 +1297,13 @@ impl App {
         let game = self.shown_game();
         let start = game.start().to_fen();
         let moves = rules::game_moves_uci(&game);
-        let key = format!("{start} {} {}", moves.join(" "), self.analysis_lines());
+        // Switching a technique searches again too.
+        let key = format!(
+            "{start} {} {} {:?}",
+            moves.join(" "),
+            self.analysis_lines(),
+            self.settings.techniques
+        );
         if analysis.key.as_deref() == Some(key.as_str()) {
             return;
         }
@@ -1144,6 +1321,7 @@ impl App {
         } else {
             PROGRESS_MS
         });
+        params.techniques = self.settings.techniques.clone();
         params.game = Some(format!("cbtui-{}", self.game_number));
         match engine.search(&params) {
             Ok(id) => {
@@ -1395,6 +1573,7 @@ impl App {
         if self.node.caps.progress {
             params.progress_ms = Some(PROGRESS_MS);
         }
+        params.techniques = self.settings.techniques.clone();
         // Lets the engine keep what it learned (its hash table) from move to move.
         params.game = Some(format!("cbtui-{}", self.game_number));
         params
@@ -1457,6 +1636,30 @@ impl App {
         let Some(cnp::Id::Number(id)) = response.id else {
             return;
         };
+        if self.techniques_request == Some(id) {
+            self.techniques_request = None;
+            if let Ok(result) = response.result::<proto::Techniques>() {
+                self.techniques = Some(result.techniques);
+            }
+            return;
+        }
+        if let Some((_, label, position)) = self.evaluate_request.take_if(|(at, ..)| *at == id) {
+            match response.result::<proto::Evaluate>() {
+                Ok(result) => {
+                    self.evaluation = Some(Evaluation {
+                        label,
+                        position,
+                        result,
+                    });
+                    self.overlay = Some(Overlay::Evaluation);
+                    self.status = "Any key closes the evaluation.".into();
+                }
+                Err(e) => {
+                    self.status = format!("{} couldn't evaluate: {}", self.node.name, e.message);
+                }
+            }
+            return;
+        }
         if self.levels_request == Some(id) {
             self.levels_request = None;
             if let Ok(levels) = response.result::<proto::Levels>() {
@@ -1594,6 +1797,7 @@ mod tests {
     struct FakeEngine {
         searches: Vec<SearchParams>,
         stops: Vec<i64>,
+        evaluations: Vec<EvaluateParams>,
     }
 
     impl Engine for FakeEngine {
@@ -1604,6 +1808,10 @@ mod tests {
         fn stop(&mut self, id: i64) -> Result<(), String> {
             self.stops.push(id);
             Ok(())
+        }
+        fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String> {
+            self.evaluations.push(params.clone());
+            Ok(500 + self.evaluations.len() as i64)
         }
     }
 
@@ -2077,6 +2285,122 @@ mod tests {
         assert_eq!(app.analysis, None);
         assert!(app.status.contains("doesn't report"), "{}", app.status);
         assert!(engine.searches.is_empty());
+    }
+
+    fn evaluating_node() -> NodeSummary {
+        let mut n = node();
+        n.caps.evaluate = true;
+        n.caps.quiet = true;
+        n.caps.techniques = true;
+        n
+    }
+
+    fn evaluation_answer(id: i64) -> NodeEvent {
+        NodeEvent::Response(Response::ok::<proto::Evaluate>(
+            id.into(),
+            &serde_json::from_value::<EvaluateResult>(serde_json::json!({
+                "score": {"cp": -33}, "quiet": [],
+                "terms": [
+                    {"id": "material", "name": "Material", "white": 3940, "black": 3940},
+                    {"id": "mobility", "name": "Mobility", "white": -89, "black": -117}
+                ]
+            }))
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn v_evaluates_the_board_and_any_key_closes_it() {
+        let settings = Settings {
+            engine_plays: [false, false],
+            ..Settings::default()
+        };
+        let (mut app, mut engine) = (
+            App::new(evaluating_node(), settings).unwrap(),
+            FakeEngine::default(),
+        );
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_key(key('v'), &mut engine);
+        assert_eq!(engine.evaluations.len(), 1);
+        let params = &engine.evaluations[0];
+        assert_eq!(params.position.moves, ["e2e4"]);
+        assert!(params.quiet, "it settles captures when it can");
+        app.handle_node(evaluation_answer(501), &mut engine);
+        assert_eq!(app.overlay, Some(Overlay::Evaluation));
+        let evaluation = app.evaluation.clone().unwrap();
+        assert_eq!(evaluation.label, "After 1. e4");
+        assert_eq!(evaluation.result.terms.len(), 2);
+        // Any key closes it, and does nothing else: `q` doesn't quit.
+        app.handle_key(key('q'), &mut engine);
+        assert_eq!(app.overlay, None);
+        assert!(!app.quit);
+
+        // An engine that can't: it says so.
+        let (mut app, mut engine) = (self::app(), FakeEngine::default());
+        app.handle_key(key('v'), &mut engine);
+        assert!(engine.evaluations.is_empty());
+        assert!(app.status.contains("can't break"), "{}", app.status);
+    }
+
+    fn techniques_answer(id: i64) -> NodeEvent {
+        NodeEvent::Response(Response::ok::<proto::Techniques>(
+            id.into(),
+            &serde_json::from_value::<proto::TechniquesResult>(serde_json::json!({
+                "techniques": [
+                    {"id": "alphabeta", "name": "Alpha-beta pruning", "description": "Cuts.", "default": true},
+                    {"id": "nullmove", "name": "Null-move pruning", "description": "Passes.", "default": true},
+                    {"id": "probcut", "name": "ProbCut", "description": "Guesses.", "default": false}
+                ]
+            }))
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn techniques_switch_on_and_off_and_go_with_every_search() {
+        let (mut app, mut engine) = (
+            App::new(evaluating_node(), Settings::default()).unwrap(),
+            FakeEngine::default(),
+        );
+        type_line(&mut app, &mut engine, ":techniques");
+        assert!(app.status.contains("hasn't said"), "{}", app.status);
+        app.expect_techniques(7);
+        app.handle_node(techniques_answer(7), &mut engine);
+        type_line(&mut app, &mut engine, ":techniques");
+        assert_eq!(app.overlay, Some(Overlay::Techniques { cursor: 0 }));
+        // Null-move pruning off, ProbCut on.
+        press(&mut app, &mut engine, KeyCode::Down);
+        app.handle_key(key(' '), &mut engine);
+        press(&mut app, &mut engine, KeyCode::End);
+        press(&mut app, &mut engine, KeyCode::Enter);
+        let switched: Vec<(&str, bool)> = app
+            .settings
+            .techniques
+            .iter()
+            .map(|(id, on)| (id.as_str(), *on))
+            .collect();
+        assert_eq!(switched, [("nullmove", false), ("probcut", true)]);
+        // `d` puts ProbCut back to its default; Esc closes.
+        app.handle_key(key('d'), &mut engine);
+        press(&mut app, &mut engine, KeyCode::Esc);
+        assert_eq!(app.overlay, None);
+        type_line(&mut app, &mut engine, "e4");
+        let sent = &engine.searches[0].techniques;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent.get("nullmove"), Some(&false));
+
+        // Switching one while analysing searches again with it.
+        let (mut app, mut engine) = (
+            App::new(evaluating_node(), Settings::default()).unwrap(),
+            FakeEngine::default(),
+        );
+        app.expect_techniques(7);
+        app.handle_node(techniques_answer(7), &mut engine);
+        app.handle_key(key('i'), &mut engine);
+        type_line(&mut app, &mut engine, ":techniques");
+        app.handle_key(key(' '), &mut engine);
+        assert_eq!(engine.searches.len(), 2);
+        assert_eq!(engine.searches[1].techniques.get("alphabeta"), Some(&false));
     }
 
     #[test]
