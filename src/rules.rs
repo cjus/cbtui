@@ -74,6 +74,32 @@ pub fn move_between(position: &Position, from: Square, to: Square) -> Option<Mov
         .or_else(|| candidates.first().copied())
 }
 
+/// The pieces a pawn can promote to, in the order a promotion picker offers them.
+pub const PROMOTION_PIECES: [PieceType; 4] = [
+    PieceType::Queen,
+    PieceType::Rook,
+    PieceType::Bishop,
+    PieceType::Knight,
+];
+
+/// The legal promotions from `from` to `to`, queen first, then rook, bishop and knight
+/// ([`PROMOTION_PIECES`]). Empty when that move isn't a promotion.
+pub fn promotions(position: &Position, from: Square, to: Square) -> Vec<Move> {
+    let candidates: Vec<Move> = moves_from(position, from)
+        .into_iter()
+        .filter(|mv| mv.to() == to && mv.promotion().is_some())
+        .collect();
+    PROMOTION_PIECES
+        .iter()
+        .filter_map(|&kind| {
+            candidates
+                .iter()
+                .copied()
+                .find(|mv| mv.promotion() == Some(kind))
+        })
+        .collect()
+}
+
 /// A move in the coordinate notation CNP uses (`e2e4`, `e7e8q`).
 pub fn to_uci(mv: Move) -> String {
     mv.to_uci(false)
@@ -141,6 +167,18 @@ mod tests {
         let position = Position::from_fen("8/4P3/8/8/8/8/8/K6k w - - 0 1").unwrap();
         let mv = move_between(&position, square(4, 6).unwrap(), square(4, 7).unwrap()).unwrap();
         assert_eq!(to_uci(mv), "e7e8q");
+    }
+
+    #[test]
+    fn a_promotion_offers_four_pieces_queen_first() {
+        let position = Position::from_fen("3r4/4P3/8/8/8/8/8/K6k w - - 0 1").unwrap();
+        let sq = |name: &str| name.parse::<Square>().unwrap();
+        let choices = promotions(&position, sq("e7"), sq("e8"));
+        let ucis: Vec<String> = choices.into_iter().map(to_uci).collect();
+        assert_eq!(ucis, ["e7e8q", "e7e8r", "e7e8b", "e7e8n"]);
+        // The capture on d8 is its own four; a plain move offers none.
+        assert_eq!(promotions(&position, sq("e7"), sq("d8")).len(), 4);
+        assert!(promotions(&Position::startpos(), sq("e2"), sq("e4")).is_empty());
     }
 
     #[test]

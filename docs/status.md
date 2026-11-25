@@ -26,10 +26,14 @@ changes the picture.
   and the panels show the tags, the moves with variations in brackets, and the comments and
   glyphs. `:play <side>` plays on from the position shown. In a game, `[` `]` (and Home,
   End) look back through the moves. Tried in tmux with and without cb2026 (2026-11-24).
+- **Promotion picker: built** (seventh PR). A pawn moved to the last rank by click or
+  arrows offers Q R B N on the promotion square and the three behind it; a click or
+  `q` `r` `b` `n` chooses, Enter is a queen, Esc puts the pawn back. Tried in tmux
+  (2026-11-24).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 60 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 66 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -50,8 +54,8 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M2 (`docs/PRD.md`): clocks with increment, resign and draw offers, a promotion picker. (PGN
-load and stepping through the moves are done.) Later for the viewer: more than the first game
+M2 (`docs/PRD.md`): clocks with increment, resign and draw offers. (PGN load, stepping
+through the moves and the promotion picker are done.) Later for the viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on
