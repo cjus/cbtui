@@ -2,6 +2,7 @@
 
 use crate::app::{MAX_MOVETIME_MS, Settings};
 use crate::clock::TimeControl;
+use crate::config::{self, Config, PIECE_NAMES, PLAY_NAMES};
 use crate::pieces::PieceChoice;
 use crate::theme::Theme;
 
@@ -36,7 +37,11 @@ Options:
                          inside tmux), else letters; letters: WK, BP; symbols: chess
                          symbols. --ascii is the same as --pieces letters
   -h, --help             This help
-  -V, --version          The version";
+  -V, --version          The version
+
+Settings (the theme, pieces, zoom, which side the engine plays, its level, time and clock)
+are saved in ~/.cbtuirc as they change, and the next run starts with them; options here win
+over the file. $CBTUI_CONFIG names another file.";
 
 /// What the command line asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -60,15 +65,21 @@ pub enum Args {
     Version,
 }
 
-/// Reads the arguments (without the program name). `env_engine` is `$CBTUI_ENGINE`.
+/// Reads the arguments (without the program name). `env_engine` is `$CBTUI_ENGINE`, and
+/// `file` the settings file, whose settings the arguments override. The engine is the
+/// argument's, else `$CBTUI_ENGINE`, else the file's; its arguments are the command line's,
+/// else the file's, else `--cnp`.
 pub fn parse(
     args: impl IntoIterator<Item = String>,
     env_engine: Option<String>,
+    file: &Config,
 ) -> Result<Args, String> {
-    let mut engine = env_engine.filter(|e| !e.is_empty());
+    let mut engine = env_engine
+        .filter(|e| !e.is_empty())
+        .or_else(|| file.engine.clone());
     let mut engine_args: Vec<String> = Vec::new();
-    let mut settings = Settings::default();
-    let mut pieces = PieceChoice::Auto;
+    let mut settings = file.apply(Settings::default());
+    let mut pieces = file.pieces.unwrap_or_default();
     let mut pgn = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -79,17 +90,9 @@ pub fn parse(
             "--engine" => engine = Some(value("--engine")?),
             "--engine-arg" => engine_args.push(value("--engine-arg")?),
             "--play" => {
-                settings.engine_plays = match value("--play")?.as_str() {
-                    "white" => [true, false],
-                    "black" => [false, true],
-                    "both" => [true, true],
-                    "none" => [false, false],
-                    other => {
-                        return Err(format!(
-                            "--play takes white, black, both or none, not `{other}`"
-                        ));
-                    }
-                }
+                let side = value("--play")?;
+                settings.engine_plays = config::parse_play(&side)
+                    .ok_or_else(|| format!("--play takes {PLAY_NAMES}, not `{side}`"))?;
             }
             "--level" => {
                 let text = value("--level")?;
@@ -125,22 +128,18 @@ pub fn parse(
             // The old name for letters, kept so it still works.
             "--ascii" => pieces = PieceChoice::Letters,
             "--pieces" => {
-                pieces = match value("--pieces")?.as_str() {
-                    "auto" => PieceChoice::Auto,
-                    "letters" => PieceChoice::Letters,
-                    "symbols" => PieceChoice::Symbols,
-                    other => {
-                        return Err(format!(
-                            "--pieces takes auto, letters or symbols, not `{other}`"
-                        ));
-                    }
-                }
+                let style = value("--pieces")?;
+                pieces = PieceChoice::parse(&style)
+                    .ok_or_else(|| format!("--pieces takes {PIECE_NAMES}, not `{style}`"))?;
             }
             other => return Err(format!("unknown option `{other}` (try --help)")),
         }
     }
     if pgn.is_some() && settings.fen.is_some() {
         return Err("--pgn and --fen both say where to start: give one".into());
+    }
+    if engine_args.is_empty() {
+        engine_args = file.engine_args.clone();
     }
     if engine_args.is_empty() {
         engine_args = DEFAULT_ENGINE_ARGS.iter().map(|s| s.to_string()).collect();
@@ -159,7 +158,57 @@ mod tests {
     use super::*;
 
     fn run(args: &[&str], env: Option<&str>) -> Result<Args, String> {
-        parse(args.iter().map(|s| s.to_string()), env.map(String::from))
+        parse(
+            args.iter().map(|s| s.to_string()),
+            env.map(String::from),
+            &Config::default(),
+        )
+    }
+
+    #[test]
+    fn the_settings_file_is_the_default_and_the_command_line_wins() {
+        let (file, _) = Config::parse(
+            "engine = /opt/cb2027\nengine-arg = --uci-free\ntheme = green\nplay = white\npieces = symbols\n",
+        );
+        let parse_with = |args: &[&str], env: Option<&str>| {
+            parse(
+                args.iter().map(|s| s.to_string()),
+                env.map(String::from),
+                &file,
+            )
+            .unwrap()
+        };
+        let Args::Run {
+            engine,
+            engine_args,
+            settings,
+            pieces,
+            ..
+        } = parse_with(&[], None)
+        else {
+            panic!()
+        };
+        assert_eq!(engine, "/opt/cb2027");
+        assert_eq!(engine_args, ["--uci-free"]);
+        assert_eq!(settings.theme, crate::theme::Theme::Green);
+        assert_eq!(settings.engine_plays, [true, false]);
+        assert_eq!(pieces, PieceChoice::Symbols);
+
+        let Args::Run {
+            engine, settings, ..
+        } = parse_with(
+            &["--theme", "dark", "--play", "black"],
+            Some("/usr/bin/cb2026"),
+        )
+        else {
+            panic!()
+        };
+        assert_eq!(
+            engine, "/usr/bin/cb2026",
+            "$CBTUI_ENGINE wins over the file"
+        );
+        assert_eq!(settings.theme, crate::theme::Theme::Dark);
+        assert_eq!(settings.engine_plays, [false, true]);
     }
 
     #[test]

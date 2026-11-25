@@ -114,5 +114,8 @@ program; cbtui shows the licence it reports, with its whole version, on the help
       shade of the theme (Carlos, 2026-11-25). A fifth, dark, for dark terminals: dim slate
       squares, white pieces muted to a soft grey (pictures too, by tinting them) and a dull
       last-move tint (Carlos, 2026-11-25).
+- [x] Settings are saved in a dot file, `~/.cbtuirc` (`$CBTUI_CONFIG` for another), as
+      `key = value` lines, written whenever a saved setting changes; options win over it. The
+      engine is read from it but never written into it (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).
