@@ -36,6 +36,7 @@ cbtui --play white          # the engine plays White
 cbtui --level 8             # a weaker engine, if it has levels
 cbtui --clock 5+3           # five minutes each, three seconds added a move
 cbtui --theme blue          # the board: brown (default), blue, green, grey, or dark
+cbtui --ponder on           # the engine thinks on your time too, if it can
 cbtui --engine ~/bin/cb2027 # another CNP engine (or set CBTUI_ENGINE)
 cbtui --help                # every option
 ```
@@ -57,7 +58,7 @@ terminal, ↑ ↓, Page Up, Page Down or the mouse wheel scroll it.
 | `i` | analyse: the engine studies the position on the board, several lines at once, until `i` again |
 | `v` | the engine's evaluation of the position on the board, term by term |
 | `w` | follow the search at its root: the move it's on, each root move's share of the effort, what it goes back over |
-| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:tree [depth]`, `:clock <min>+<sec>\|off`, `:theme [name]`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
+| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:tree [depth]`, `:clock <min>+<sec>\|off`, `:ponder on\|off`, `:theme [name]`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
 With a clock, the clocks start with the first move and stand beside the players' names. An
@@ -85,12 +86,16 @@ searched shallower or again), and the board shows the position you're at. The ar
 it: ↑ ↓ choose a move, → goes into it, ← back up, Esc closes. Each of these appears only
 with an engine that has it.
 
+With `:ponder on` (and an engine that can, as cb2026 can), the engine keeps thinking while
+it's your move, on the reply it expects; the engine panel says which. Play that reply and it
+answers sooner and stronger, keeping what it found; play another and it starts afresh.
+
 ## Settings
 
 cbtui saves its settings in `~/.cbtuirc` whenever they change, by an option or a `:` command,
 and the next run starts with them: the theme, how pieces are drawn, zoom and flip, which
-side the engine plays, its level, time per move and clock, and how many lines an analysis
-shows. It's plain `key = value` lines, to edit by hand too; `engine = <path>` and
+side the engine plays, its level, time per move and clock, pondering, and how many lines
+an analysis shows. It's plain `key = value` lines, to edit by hand too; `engine = <path>` and
 `engine-arg = <arg>` lines name the engine. Options on the command line win over the file,
 and `$CBTUI_CONFIG` names another file.
 

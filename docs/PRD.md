@@ -117,5 +117,8 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Settings are saved in a dot file, `~/.cbtuirc` (`$CBTUI_CONFIG` for another), as
       `key = value` lines, written whenever a saved setting changes; options win over it. The
       engine is read from it but never written into it (Carlos, 2026-11-25).
+- [x] Pondering (from #4): `:ponder on|off` and `--ponder`, off by default and saved. After its
+      move the engine ponders on the reply it expects; a hit sends `engine/ponderHit`, a miss
+      stops the ponder search and starts a new one (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

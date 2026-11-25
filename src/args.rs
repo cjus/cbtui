@@ -28,6 +28,7 @@ Options:
   --level <n>            The engine's playing level, if it has levels (default: full strength)
   --movetime <ms>        How long the engine thinks a move (default: 1000)
   --clock <min>+<sec>    Play to a clock: minutes each, seconds added a move (5+3)
+  --ponder on|off        Whether the engine thinks on your time, if it can (default: off)
   --fen <FEN>            Start from this position
   --pgn <file>           View the first game in a PGN file: the arrows step through it,
                          variations included. Works without an engine
@@ -39,7 +40,8 @@ Options:
   -h, --help             This help
   -V, --version          The version
 
-Settings (the theme, pieces, zoom, which side the engine plays, its level, time and clock)
+Settings (the theme, pieces, zoom, which side the engine plays, its level, time, clock and
+pondering)
 are saved in ~/.cbtuirc as they change, and the next run starts with them; options here win
 over the file. $CBTUI_CONFIG names another file.";
 
@@ -122,6 +124,13 @@ pub fn parse(
                 let name = value("--theme")?;
                 settings.theme = Theme::parse(&name)
                     .ok_or_else(|| format!("--theme takes {}, not `{name}`", Theme::names()))?;
+            }
+            "--ponder" => {
+                settings.ponder = match value("--ponder")?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("--ponder takes on or off, not `{other}`")),
+                }
             }
             "--fen" => settings.fen = Some(value("--fen")?),
             "--pgn" => pgn = Some(value("--pgn")?),
