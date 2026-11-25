@@ -125,10 +125,18 @@ changes the picture.
   list's keys, the game endings, a Themes section, and the settings file on Windows. The
   76×20 letters sample is a fresh capture. `cbtui --help` no longer breaks a line early.
   Screenshots to take are #25 for Carlos.
+- **Demo: built** (twenty-fourth PR, Carlos's ask). `--demo` plays a short game by itself to
+  show the features, for a first look or a screen recording: e4 with the arrow keys (the
+  move dots showing), Nf3 and Nc3 typed, the engine pondering, `i`, `w`, `v`, then `z` and
+  every theme, `t`, and back. Captions on the status line say what each key is. Moves wait
+  for the engine's reply; any key or click stops it (the key used up, so `q` doesn't quit).
+  It starts from the defaults with pondering on, ignoring and never writing the settings
+  file (the file's engine still plays); `--play`, `--fen` and `--pgn` are refused with it.
+  About 35 s with cb2026. Tried in tmux (2026-11-25): the whole script, and `q` partway.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 124 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 127 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 5 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).

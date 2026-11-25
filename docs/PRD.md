@@ -51,6 +51,7 @@ One crate, a library and a binary:
 | `ui` | Drawing with Ratatui; the same layout code places mouse clicks |
 | `pieces` | Pieces as pictures (ratatui-image finds the terminal's image protocol, resvg draws the SVGs at a square's size) or as two letters |
 | `args` | The command line |
+| `demo` | `--demo`: a timed script of key presses fed to `app`, as a person's are |
 | `main.rs` | The terminal, and one event loop over one channel (keys, mouse, engine) |
 
 Dependencies are pinned by commit where they are git dependencies: `cnp` (the protocol's
@@ -126,5 +127,9 @@ program; cbtui shows the licence it reports, with its whole version, on the help
       are signed and notarised on Carlos's Mac by `scripts/mac-sign-release.sh`, with the
       Developer ID and `cb2026-notary` profile cb2026's and Solrac's releases use (Carlos,
       2026-11-25).
+- [x] A demo, `--demo`: a short game that shows the features by itself (arrow-key and typed
+      moves, pondering, analysis, the root, the evaluation, zoom through every theme, flip),
+      for a first look or a screen recording. It starts from the defaults, saves nothing,
+      and any key hands the game over (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use cbtui::app::{App, NodeSummary};
 use cbtui::args::{self, Args, ENGINE_ENV, USAGE};
 use cbtui::config::{self, Config};
+use cbtui::demo::Demo;
 use cbtui::help::WHEEL_LINES;
 use cbtui::node::{Engine, NoEngine, Node, NodeEvent};
 use cbtui::pieces::{PieceChoice, Pieces};
@@ -18,7 +19,8 @@ use cbtui::review::Review;
 use cbtui::ui::{self, Palette};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, MouseButton, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event as TermEvent, KeyEventKind, MouseButton,
+    MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -43,14 +45,15 @@ fn main() -> ExitCode {
         std::env::var(ENGINE_ENV).ok(),
         &file,
     );
-    let (engine, engine_args, settings, piece_choice, pgn) = match parsed {
+    let (engine, engine_args, settings, piece_choice, pgn, demo) = match parsed {
         Ok(Args::Run {
             engine,
             engine_args,
             settings,
             pieces,
             pgn,
-        }) => (engine, engine_args, settings, pieces, pgn),
+            demo,
+        }) => (engine, engine_args, settings, pieces, pgn, demo),
         Ok(Args::Help) => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -114,8 +117,10 @@ fn main() -> ExitCode {
         }
     };
     app.has_engine = node.is_some();
-    app.zoomed = file.zoom.unwrap_or(false);
-    app.flipped = file.flip.unwrap_or(false);
+    if !demo {
+        app.zoomed = file.zoom.unwrap_or(false);
+        app.flipped = file.flip.unwrap_or(false);
+    }
     if !file_warnings.is_empty() {
         let name = config_path
             .as_ref()
@@ -172,14 +177,17 @@ fn main() -> ExitCode {
         }
     });
 
+    // The demo changes settings to show them off; they aren't the person's to keep.
     let mut saver = Saver {
-        path: config_path,
+        path: config_path.filter(|_| !demo),
         file,
         last: None,
         pieces: piece_choice,
         failed: false,
     };
     saver.save(&mut app);
+
+    let mut demo = demo.then(|| Demo::new(Instant::now(), app.settings.theme));
 
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(
@@ -189,6 +197,7 @@ fn main() -> ExitCode {
         &mut pieces,
         &rx,
         &mut saver,
+        &mut demo,
     );
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
@@ -298,7 +307,8 @@ fn install_mouse_restoring_panic_hook() {
 }
 
 /// Draws, waits for the next event, handles it and every other one already waiting, and
-/// draws again, until the user quits.
+/// draws again, until the user quits. A running `demo` takes its steps as they fall due, and
+/// the person's first key or click stops it.
 fn run(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -306,6 +316,7 @@ fn run(
     pieces: &mut Pieces,
     rx: &Receiver<Event>,
     saver: &mut Saver,
+    demo: &mut Option<Demo>,
 ) -> io::Result<()> {
     // A terminal that shows pictures has 24-bit colour, and the pictures need it to match.
     let true_color = matches!(pieces, Pieces::Images(_)) || ui::true_color_terminal();
@@ -321,9 +332,14 @@ fn run(
         // The help scrolls against what the screen shows.
         app.screen = area;
         // While a clock runs, wake up to redraw it (and to see a flag fall) even when
-        // nothing happens.
-        let first = if app.clock_running() {
-            match rx.recv_timeout(CLOCK_REDRAW) {
+        // nothing happens; and when the demo's next step is due.
+        let clock = app.clock_running().then_some(CLOCK_REDRAW);
+        let step = demo
+            .as_ref()
+            .and_then(Demo::next_wake)
+            .map(|at| at.saturating_duration_since(Instant::now()));
+        let first = if let Some(timeout) = clock.into_iter().chain(step).min() {
+            match rx.recv_timeout(timeout) {
                 Ok(event) => Some(event),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return Ok(()),
@@ -337,15 +353,36 @@ fn run(
         // The time comes first, so a move is charged to the clock as it stands now.
         app.tick(Instant::now(), engine_of(node, &mut NoEngine));
         let aspect = pieces.cell_aspect();
-        if let Some(first) = first {
-            handle(first, app, node, area, aspect);
-        }
-        while let Ok(event) = rx.try_recv() {
+        for event in first
+            .into_iter()
+            .chain(std::iter::from_fn(|| rx.try_recv().ok()))
+        {
+            if demo.is_some() && is_input(&event) {
+                if let Some(demo) = demo.take() {
+                    demo.interrupt(app);
+                }
+                continue;
+            }
             handle(event, app, node, area, aspect);
+        }
+        if let Some(running) = demo {
+            running.run(Instant::now(), app, engine_of(node, &mut NoEngine));
+            if running.finished() {
+                *demo = None;
+            }
         }
         saver.save(app);
     }
     Ok(())
+}
+
+/// Whether `event` is the person pressing a key or clicking.
+fn is_input(event: &Event) -> bool {
+    match event {
+        Event::Term(TermEvent::Key(key)) => key.kind != KeyEventKind::Release,
+        Event::Term(TermEvent::Mouse(mouse)) => matches!(mouse.kind, MouseEventKind::Down(_)),
+        _ => false,
+    }
 }
 
 fn handle(event: Event, app: &mut App, node: &mut Option<Node>, area: Rect, aspect: Option<f32>) {
