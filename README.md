@@ -55,7 +55,7 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 | `i` | analyse: the engine studies the position on the board, several lines at once, until `i` again |
 | `v` | the engine's evaluation of the position on the board, term by term |
 | `w` | follow the search at its root: the move it's on, each root move's share of the effort, what it goes back over |
-| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
+| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:tree [depth]`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
 With a clock, the clocks start with the first move and stand beside the players' names. An
@@ -76,7 +76,12 @@ techniques it can switch, to turn them off or on for every search after: try ana
 null-move pruning off. `w` follows the engine's searches at their root, in place of the
 move list: which root move it is searching, a bar for each move's share of its effort, and
 the latest thing it went back over (a move that looked better, a score outside its window).
-Each appears only with an engine that has it.
+`:tree [depth]` has the engine search the position on the board and keep the search's tree
+near the root, then shows it in place of the side panels: the moves the search looked at,
+each with its score and what the search decided about it (refuted by a reply, left out,
+searched shallower or again), and the board shows the position you're at. The arrows walk
+it: ↑ ↓ choose a move, → goes into it, ← back up, Esc closes. Each of these appears only
+with an engine that has it.
 
 ## View a PGN game
 

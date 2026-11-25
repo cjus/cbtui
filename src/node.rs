@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use cnp::engine::{
     EngineProgress, Evaluate, EvaluateParams, Levels, Progress, Root, RootParams, Search,
-    SearchParams, Stop, StopParams, Techniques,
+    SearchParams, Stop, StopParams, Techniques, Tree, TreeNodePage, TreeNodeParams, TreeParams,
 };
 use cnp::lifecycle::{
     Exit, Initialize, InitializeParams, InitializeResult, PROTOCOL_VERSION, Shutdown, Software,
@@ -256,6 +256,10 @@ pub trait Engine {
     fn stop(&mut self, id: i64) -> Result<(), String>;
     /// Sends `engine/evaluate`, returning the request's id.
     fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String>;
+    /// Sends `engine/tree`, returning the request's id.
+    fn tree(&mut self, params: &TreeParams) -> Result<i64, String>;
+    /// Sends `engine/treeNode`, returning the request's id.
+    fn tree_node(&mut self, params: &TreeNodeParams) -> Result<i64, String>;
 }
 
 impl Engine for Node {
@@ -270,6 +274,14 @@ impl Engine for Node {
 
     fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String> {
         self.request::<Evaluate>(params)
+    }
+
+    fn tree(&mut self, params: &TreeParams) -> Result<i64, String> {
+        self.request::<Tree>(params)
+    }
+
+    fn tree_node(&mut self, params: &TreeNodeParams) -> Result<i64, String> {
+        self.request::<TreeNodePage>(params)
     }
 }
 
@@ -288,6 +300,14 @@ impl Engine for NoEngine {
     }
 
     fn evaluate(&mut self, _params: &EvaluateParams) -> Result<i64, String> {
+        Err("No engine is connected.".into())
+    }
+
+    fn tree(&mut self, _params: &TreeParams) -> Result<i64, String> {
+        Err("No engine is connected.".into())
+    }
+
+    fn tree_node(&mut self, _params: &TreeNodeParams) -> Result<i64, String> {
         Err("No engine is connected.".into())
     }
 }

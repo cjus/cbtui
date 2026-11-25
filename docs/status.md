@@ -59,11 +59,18 @@ changes the picture.
   move's share of the effort, and the latest re-search in words. It works for the engine's
   moves and for analyses; an analysis starts again when it's switched. Tried in tmux with
   cb2026 (2026-11-24).
+- **Tree browser: built** (twelfth PR); M4 is done, and with it every planned milestone.
+  `:tree [depth]` sends `engine/tree` for the position on the board and opens the answer in
+  place of the side panels: the search's result, the node walked to with its window and
+  score, its children with their scores, depth and decisions in brief, and the highlighted
+  one's decisions in full. → asks `engine/treeNode` for the next level, ← goes back, and the
+  board shows the node's position. An expired tree closes and says to search again. Tried in
+  tmux (2026-11-24): a depth-8 tree after 1. e4 e5 2. Nf3 Nc6, walked into 3. Bb5 Nd4.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 96 unit tests (the app against a fake engine, the CNP client against a fake node over
-  pipes, the layout and mouse mapping with Ratatui's test backend), and 3 against a real cb2026
+- Tests: 102 unit tests (the app against a fake engine, the CNP client against a fake node over
+  pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
 
@@ -83,8 +90,9 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M4 (`docs/PRD.md`): browsing a search's tree (`engine/tree`, `engine/treeNode`). (Following
-the root is done.) Later for the viewer: more than the first game
+Every milestone in `docs/PRD.md` is built. What's left is the "Later" row (engines on
+another computer, a UCI backend, themes), to be decided now that M3 is done. Later for the
+viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on

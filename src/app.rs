@@ -66,6 +66,7 @@ use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
 use crate::root::RootView;
 use crate::rules::{self, Color, Game, Move, Outcome, Piece, Position, Square};
+use crate::tree::{TREE_DEPTH, TREE_PLIES, TreeBrowser};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
 pub const PROGRESS_MS: u64 = 200;
@@ -124,6 +125,10 @@ pub struct NodeSummary {
     pub caps: EngineCapabilities,
     /// The most lines one search may return (its `maxMultipv`).
     pub max_multipv: u32,
+    /// The deepest `engine/tree` search it allows.
+    pub max_tree_depth: u32,
+    /// The most plies from the root a tree may record.
+    pub max_tree_plies: u32,
 }
 
 impl NodeSummary {
@@ -143,6 +148,12 @@ impl NodeSummary {
             license: info.node.license.clone(),
             caps: info.capabilities.engine.clone().unwrap_or_default(),
             max_multipv: info.limits.multipv(),
+            max_tree_depth: info
+                .limits
+                .max_tree_depth
+                .or(info.limits.max_depth)
+                .unwrap_or(u32::MAX),
+            max_tree_plies: info.limits.max_tree_plies.unwrap_or(u32::MAX),
         }
     }
 }
@@ -280,6 +291,8 @@ pub struct App {
     pub follow_root: bool,
     /// The latest report of the current search's root.
     pub root: Option<RootView>,
+    /// A search tree being walked (`:tree`).
+    pub tree: Option<TreeBrowser>,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -307,6 +320,8 @@ pub struct App {
     levels_request: Option<i64>,
     /// The `engine/techniques` request's id, until it is answered.
     techniques_request: Option<i64>,
+    /// The `engine/tree` request's id and the position it searches, until it is answered.
+    tree_request: Option<(i64, Position)>,
     /// The `engine/evaluate` request's id and what it evaluates, until it is answered.
     evaluate_request: Option<(i64, String, Position)>,
     /// Counts games, to tell the engine when a new one starts (the `game` hint).
@@ -346,6 +361,7 @@ impl App {
             overlay: None,
             follow_root: false,
             root: None,
+            tree: None,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -361,6 +377,7 @@ impl App {
             levels_request: None,
             techniques_request: None,
             evaluate_request: None,
+            tree_request: None,
             game_number: 1,
             clock_history: Vec::new(),
         })
@@ -475,6 +492,9 @@ impl App {
 
     /// The position on the board: the viewer's, the one looked back at, or the game's.
     pub fn shown_position(&self) -> Position {
+        if let Some(tree) = &self.tree {
+            return tree.level().position.clone();
+        }
         if let Some(review) = &self.review {
             return review.current().position.clone();
         }
@@ -510,6 +530,14 @@ impl App {
 
     /// The move that led to the position on the board, if any.
     pub fn shown_last_move(&self) -> Option<Move> {
+        // In a tree, the highlighted child's move: the one being looked at.
+        if let Some(tree) = &self.tree {
+            let level = tree.level();
+            return level
+                .selected()
+                .and_then(|child| child.mv.as_deref())
+                .and_then(|mv| level.position.parse_uci_move(mv));
+        }
         if let Some(review) = &self.review {
             return review.current().mv;
         }
@@ -524,6 +552,9 @@ impl App {
 
     /// The move that led to the position on the board, numbered: `12. Nf3` or `12… Nc6`.
     pub fn shown_move_label(&self) -> Option<String> {
+        if self.tree.is_some() {
+            return None;
+        }
         if let Some(review) = &self.review {
             return (review.cursor() != 0).then(|| review.label(review.cursor(), true));
         }
@@ -666,6 +697,10 @@ impl App {
             self.overlay_key(overlay, key.code);
             return;
         }
+        if self.tree.is_some() {
+            self.tree_key(key.code, engine);
+            return;
+        }
         if self.promotion.is_some() {
             self.promotion_key(key.code, engine);
             return;
@@ -788,6 +823,68 @@ impl App {
     /// Whether searches should report their root.
     fn wants_root(&self) -> bool {
         self.follow_root && self.node.caps.root
+    }
+
+    /// Asks the engine for a search tree of the position on the board, `depth` plies deep (or
+    /// [`TREE_DEPTH`]), recording [`TREE_PLIES`] plies; it opens when the answer comes.
+    fn open_tree(&mut self, depth: Option<u32>, engine: &mut dyn Engine) {
+        if !self.has_engine {
+            self.status = NO_ENGINE.into();
+            return;
+        }
+        if !self.node.caps.tree {
+            self.status = format!("{} can't record a search's tree.", self.node.name);
+            return;
+        }
+        let most = self.node.max_tree_depth;
+        let depth = depth.unwrap_or(TREE_DEPTH).min(most);
+        let plies = TREE_PLIES.min(self.node.max_tree_plies).max(1);
+        let game = self.shown_game();
+        let position =
+            proto::Position::fen(game.start().to_fen()).with_moves(rules::game_moves_uci(&game));
+        match engine.tree(&crate::tree::params(position, depth, plies)) {
+            Ok(id) => {
+                self.tree_request = Some((id, game.position().clone()));
+                self.status = format!("Searching {depth} plies deep and keeping the tree…");
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// The tree's keys: the arrows choose a child (Page Up, Page Down, Home, End too), → or
+    /// Enter goes into it, ← or Backspace back up, Esc or `q` closes the tree.
+    fn tree_key(&mut self, code: KeyCode, engine: &mut dyn Engine) {
+        let Some(tree) = &mut self.tree else {
+            return;
+        };
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => tree.move_cursor(-1),
+            KeyCode::Down | KeyCode::Char('j') => tree.move_cursor(1),
+            KeyCode::PageUp => tree.move_cursor(-(TECHNIQUES_PAGE as isize)),
+            KeyCode::PageDown => tree.move_cursor(TECHNIQUES_PAGE as isize),
+            KeyCode::Home => tree.select(0),
+            KeyCode::End => tree.select(usize::MAX),
+            KeyCode::Right | KeyCode::Enter => match tree.path_into() {
+                Some(path) => {
+                    let params = cnp::engine::TreeNodeParams::new(tree.handle.clone(), path);
+                    match engine.tree_node(&params) {
+                        Ok(id) => tree.request = Some(id),
+                        Err(e) => self.status = e,
+                    }
+                }
+                None => self.status = "The tree holds nothing below that move.".into(),
+            },
+            KeyCode::Left | KeyCode::Backspace => {
+                if !tree.back() {
+                    self.status = "This is the root. Esc closes the tree.".into();
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.tree = None;
+                self.status = "Tree closed.".into();
+            }
+            _ => {}
+        }
     }
 
     /// Opens the techniques, if the engine has them.
@@ -959,6 +1056,10 @@ impl App {
         if self.overlay.take().is_some() {
             return;
         }
+        if self.tree.is_some() {
+            self.status = "The board shows the tree: Esc closes it.".into();
+            return;
+        }
         self.cursor = square;
         self.cursor_visible = false;
         self.handle_square(square, engine);
@@ -1096,6 +1197,11 @@ impl App {
             ("eval" | "evaluate", _) => self.evaluate(engine),
             ("techniques" | "tech", _) => self.open_techniques(),
             ("root", _) => self.toggle_root(),
+            ("tree", []) => self.open_tree(None, engine),
+            ("tree", [depth]) => match depth.parse::<u32>() {
+                Ok(depth) if depth >= 1 => self.open_tree(Some(depth), engine),
+                _ => self.status = "Usage: :tree [depth]".into(),
+            },
             ("resign", _) => self.resign(engine),
             ("draw", _) => self.offer_draw(engine),
             ("clock", [text]) => self.set_clock(text),
@@ -1451,6 +1557,7 @@ impl App {
         self.promotion = None;
         self.draw_offered = false;
         self.thinking = None;
+        self.tree = None;
         self.reset_clocks();
         self.status = "New game.".into();
         self.maybe_start_engine(engine);
@@ -1689,6 +1796,43 @@ impl App {
         let Some(cnp::Id::Number(id)) = response.id else {
             return;
         };
+        if let Some((_, position)) = self.tree_request.take_if(|(at, _)| *at == id) {
+            match response.result::<proto::Tree>() {
+                Ok(result) => {
+                    let tree = TreeBrowser::new(result, position);
+                    self.status = format!(
+                        "The search's tree, {} plies recorded: ↑ ↓ choose, → into, ← back, Esc closes.",
+                        tree.plies
+                    );
+                    self.selected = None;
+                    self.tree = Some(tree);
+                }
+                Err(e) => {
+                    self.status = format!("{} couldn't make a tree: {}", self.node.name, e.message);
+                }
+            }
+            return;
+        }
+        if let Some(tree) = &mut self.tree
+            && tree.request == Some(id)
+        {
+            tree.request = None;
+            match response.result::<proto::TreeNodePage>() {
+                Ok(answer) => tree.enter(answer),
+                Err(e) if e.code == code::EXPIRED => {
+                    self.tree = None;
+                    self.status = format!(
+                        "{} has let the tree go: :tree searches again.",
+                        self.node.name
+                    );
+                }
+                Err(e) => {
+                    self.status =
+                        format!("{} couldn't read the tree: {}", self.node.name, e.message);
+                }
+            }
+            return;
+        }
         if self.techniques_request == Some(id) {
             self.techniques_request = None;
             if let Ok(result) = response.result::<proto::Techniques>() {
@@ -1851,6 +1995,8 @@ mod tests {
         searches: Vec<SearchParams>,
         stops: Vec<i64>,
         evaluations: Vec<EvaluateParams>,
+        trees: Vec<cnp::engine::TreeParams>,
+        tree_nodes: Vec<cnp::engine::TreeNodeParams>,
     }
 
     impl Engine for FakeEngine {
@@ -1866,6 +2012,14 @@ mod tests {
             self.evaluations.push(params.clone());
             Ok(500 + self.evaluations.len() as i64)
         }
+        fn tree(&mut self, params: &cnp::engine::TreeParams) -> Result<i64, String> {
+            self.trees.push(params.clone());
+            Ok(700 + self.trees.len() as i64)
+        }
+        fn tree_node(&mut self, params: &cnp::engine::TreeNodeParams) -> Result<i64, String> {
+            self.tree_nodes.push(params.clone());
+            Ok(800 + self.tree_nodes.len() as i64)
+        }
     }
 
     fn node() -> NodeSummary {
@@ -1880,6 +2034,8 @@ mod tests {
                 ..EngineCapabilities::default()
             },
             max_multipv: 4,
+            max_tree_depth: 24,
+            max_tree_plies: 6,
         }
     }
 
@@ -2501,6 +2657,118 @@ mod tests {
         app.handle_key(key('w'), &mut engine);
         assert!(!app.follow_root);
         assert!(app.status.contains("can't report"), "{}", app.status);
+    }
+
+    fn tree_answer(id: i64) -> NodeEvent {
+        NodeEvent::Response(Response::ok::<proto::Tree>(
+            id.into(),
+            &serde_json::from_value::<proto::TreeResult>(serde_json::json!({
+                "tree": "t1", "expiresMs": 300000, "depth": 8, "nodes": 30000, "timeMs": 30,
+                "bestMove": "e7e5", "score": {"cp": -20}, "pv": ["e7e5"],
+                "recorded": {"plies": 3, "nodes": 50, "decisions": 90},
+                "root": {"depth": 8, "score": {"cp": -20}, "childCount": 2, "subtree": 49},
+                "children": [
+                    {"move": "e7e5", "depth": 7, "score": {"cp": 20}, "childCount": 3, "subtree": 20},
+                    {"move": "a7a6", "depth": 7, "score": {"cp": 60, "bound": "lower"},
+                     "childCount": 0, "subtree": 0,
+                     "decisions": [{"kind": "cutoff", "move": "d2d4", "order": 1}]}
+                ]
+            }))
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn tree_searches_the_board_and_walks_its_tree() {
+        let mut n = node();
+        n.caps.tree = true;
+        n.max_tree_depth = 24;
+        n.max_tree_plies = 6;
+        let settings = Settings {
+            engine_plays: [false, false],
+            ..Settings::default()
+        };
+        let (mut app, mut engine) = (App::new(n, settings).unwrap(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        type_line(&mut app, &mut engine, ":tree 30");
+        let params = &engine.trees[0];
+        assert_eq!(params.position.moves, ["e2e4"]);
+        assert_eq!(
+            (params.depth, params.plies),
+            (24, Some(TREE_PLIES)),
+            "within the engine's limits"
+        );
+        app.handle_node(tree_answer(701), &mut engine);
+        let tree = app.tree.as_ref().unwrap();
+        assert_eq!(tree.best.as_deref(), Some("e5"));
+        // The board shows the tree's position, and the highlighted child's move.
+        assert_eq!(
+            app.shown_last_move(),
+            app.shown_position().parse_uci_move("e7e5")
+        );
+
+        // a6 has nothing below it; e5 has.
+        press(&mut app, &mut engine, KeyCode::Down);
+        press(&mut app, &mut engine, KeyCode::Right);
+        assert!(engine.tree_nodes.is_empty());
+        assert!(app.status.contains("nothing below"), "{}", app.status);
+        press(&mut app, &mut engine, KeyCode::Up);
+        press(&mut app, &mut engine, KeyCode::Enter);
+        assert_eq!(engine.tree_nodes[0].path, ["e7e5"]);
+        assert_eq!(engine.tree_nodes[0].tree, "t1");
+        app.handle_node(
+            NodeEvent::Response(Response::ok::<proto::TreeNodePage>(
+                801.into(),
+                &serde_json::from_value::<proto::TreeNodeResult>(serde_json::json!({
+                    "node": {"move": "e7e5", "depth": 7, "childCount": 1, "subtree": 20},
+                    "children": [{"move": "g1f3", "depth": 6, "childCount": 0, "subtree": 0}]
+                }))
+                .unwrap(),
+            )),
+            &mut engine,
+        );
+        assert_eq!(app.tree.as_ref().unwrap().path_san(), ["e5"]);
+        assert_eq!(app.shown_position().side_to_move(), Color::White);
+        // Clicks don't move pieces meanwhile; ← goes back, Esc closes, and q isn't quit.
+        app.handle_click(sq("g1"), &mut engine);
+        assert_eq!(app.selected, None);
+        press(&mut app, &mut engine, KeyCode::Left);
+        assert_eq!(app.tree.as_ref().unwrap().levels.len(), 1);
+        app.handle_key(key('q'), &mut engine);
+        assert!(app.tree.is_none() && !app.quit);
+        assert_eq!(app.shown_position(), *app.game.position());
+    }
+
+    #[test]
+    fn an_expired_tree_closes_and_says_to_search_again() {
+        let mut n = node();
+        n.caps.tree = true;
+        let (mut app, mut engine) = (
+            App::new(n, Settings::default()).unwrap(),
+            FakeEngine::default(),
+        );
+        type_line(&mut app, &mut engine, ":tree");
+        app.handle_node(tree_answer(701), &mut engine);
+        press(&mut app, &mut engine, KeyCode::Enter);
+        app.handle_node(
+            NodeEvent::Response(Response::error(
+                Some(801.into()),
+                cnp::ResponseError::new(code::EXPIRED, "expired"),
+            )),
+            &mut engine,
+        );
+        assert!(app.tree.is_none());
+        assert!(
+            app.status.contains(":tree searches again"),
+            "{}",
+            app.status
+        );
+
+        // Without the capability it explains.
+        let (mut app, mut engine) = (self::app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":tree");
+        assert!(engine.trees.is_empty());
+        assert!(app.status.contains("can't record"), "{}", app.status);
     }
 
     #[test]

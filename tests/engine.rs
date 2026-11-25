@@ -19,6 +19,23 @@ fn engine() -> Option<String> {
     engine
 }
 
+/// Hands the app what the engine sends until `done`, failing after 20 seconds.
+fn wait_for(
+    app: &mut App,
+    node: &mut Node,
+    rx: &mpsc::Receiver<cbtui::node::NodeEvent>,
+    done: impl Fn(&App) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done(app) {
+        let event = rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the engine answers");
+        app.handle_node(event, node);
+        assert!(!app.disconnected, "{}", app.status);
+    }
+}
+
 #[test]
 fn the_engine_plays_both_sides_for_a_few_moves() {
     let Some(engine) = engine() else {
@@ -131,5 +148,45 @@ fn an_analysis_finds_several_lines_and_the_evaluation_has_terms() {
     assert!(!app.techniques.as_ref().unwrap().is_empty());
     app.command("analyse", &mut node);
     assert!(app.analysis.is_none());
+    node.shutdown();
+}
+
+#[test]
+fn a_search_tree_opens_and_walks() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    let Some(engine) = engine() else {
+        return;
+    };
+    let (tx, rx) = mpsc::channel();
+    let mut node = Node::spawn(&engine, &["--cnp".to_string()], move |event| {
+        let _ = tx.send(event);
+    })
+    .unwrap();
+    let summary = NodeSummary::from_info(node.info());
+    assert!(summary.caps.tree, "cb2026 records trees");
+    let settings = Settings {
+        engine_plays: [false, false],
+        ..Settings::default()
+    };
+    let mut app = App::new(summary, settings).unwrap();
+    app.command("tree 6", &mut node);
+    wait_for(&mut app, &mut node, &rx, |app| app.tree.is_some());
+    let tree = app.tree.as_ref().unwrap();
+    assert!(!tree.level().children.is_empty());
+    // Into the first root move with something recorded below it.
+    let index = tree
+        .level()
+        .children
+        .iter()
+        .position(|c| c.child_count > 0)
+        .expect("some root move has replies recorded");
+    for _ in 0..index {
+        app.handle_key(KeyEvent::from(KeyCode::Down), &mut node);
+    }
+    app.handle_key(KeyEvent::from(KeyCode::Enter), &mut node);
+    wait_for(&mut app, &mut node, &rx, |app| {
+        app.tree.as_ref().unwrap().levels.len() == 2
+    });
+    assert!(!app.tree.as_ref().unwrap().level().children.is_empty());
     node.shutdown();
 }
