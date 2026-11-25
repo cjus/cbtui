@@ -591,6 +591,18 @@ impl App {
         })
     }
 
+    /// Which sides the engine plays, as the person chose them, to save: what an analysis put
+    /// aside, and `None` in a PGN viewer, which sets them for itself.
+    pub fn saved_play(&self) -> Option<[bool; 2]> {
+        if self.review.is_some() {
+            return None;
+        }
+        Some(match &self.analysis {
+            Some(analysis) => analysis.engine_plays,
+            None => self.settings.engine_plays,
+        })
+    }
+
     /// Why the board can't be played on now, if it can't: a PGN viewer, or looking back.
     fn read_only(&self) -> Option<String> {
         if let Some(review) = &self.review {

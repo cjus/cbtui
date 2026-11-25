@@ -85,6 +85,15 @@ searched shallower or again), and the board shows the position you're at. The ar
 it: ↑ ↓ choose a move, → goes into it, ← back up, Esc closes. Each of these appears only
 with an engine that has it.
 
+## Settings
+
+cbtui saves its settings in `~/.cbtuirc` whenever they change, by an option or a `:` command,
+and the next run starts with them: the theme, how pieces are drawn, zoom and flip, which
+side the engine plays, its level, time per move and clock, and how many lines an analysis
+shows. It's plain `key = value` lines, to edit by hand too; `engine = <path>` and
+`engine-arg = <arg>` lines name the engine. Options on the command line win over the file,
+and `$CBTUI_CONFIG` names another file.
+
 ## View a PGN game
 
 ```sh

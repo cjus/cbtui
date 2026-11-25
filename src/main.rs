@@ -1,6 +1,8 @@
 //! The `cbtui` program: starts the engine, takes over the terminal, and runs the event loop.
 
+use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
@@ -8,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use cbtui::app::{App, NodeSummary};
 use cbtui::args::{self, Args, ENGINE_ENV, USAGE};
+use cbtui::config::{self, Config};
 use cbtui::help::WHEEL_LINES;
 use cbtui::node::{Engine, NoEngine, Node, NodeEvent};
 use cbtui::pieces::{PieceChoice, Pieces};
@@ -33,7 +36,13 @@ enum Event {
 }
 
 fn main() -> ExitCode {
-    let parsed = args::parse(std::env::args().skip(1), std::env::var(ENGINE_ENV).ok());
+    let config_path = config::path();
+    let (file, file_warnings) = read_config(config_path.as_ref());
+    let parsed = args::parse(
+        std::env::args().skip(1),
+        std::env::var(ENGINE_ENV).ok(),
+        &file,
+    );
     let (engine, engine_args, settings, piece_choice, pgn) = match parsed {
         Ok(Args::Run {
             engine,
@@ -97,6 +106,18 @@ fn main() -> ExitCode {
         }
     };
     app.has_engine = node.is_some();
+    app.zoomed = file.zoom.unwrap_or(false);
+    app.flipped = file.flip.unwrap_or(false);
+    if !file_warnings.is_empty() {
+        let name = config_path
+            .as_ref()
+            .map_or("the settings file".to_string(), |p| p.display().to_string());
+        app.status = format!(
+            "{} ({name}, skipped: {}.)",
+            app.status,
+            file_warnings.join("; ")
+        );
+    }
     if let Some(review) = review {
         app.open_review(review);
     }
@@ -143,8 +164,24 @@ fn main() -> ExitCode {
         }
     });
 
+    let mut saver = Saver {
+        path: config_path,
+        file,
+        last: None,
+        pieces: piece_choice,
+        failed: false,
+    };
+    saver.save(&mut app);
+
     let _ = execute!(io::stdout(), EnableMouseCapture);
-    let result = run(&mut terminal, &mut app, &mut node, &mut pieces, &rx);
+    let result = run(
+        &mut terminal,
+        &mut app,
+        &mut node,
+        &mut pieces,
+        &rx,
+        &mut saver,
+    );
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
     if let Some(node) = node {
@@ -156,6 +193,53 @@ fn main() -> ExitCode {
             eprintln!("cbtui: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Reads the settings file at `path`. A missing file is no settings; one that can't be read
+/// is no settings and a warning, since it mustn't stop cbtui starting.
+fn read_config(path: Option<&PathBuf>) -> (Config, Vec<String>) {
+    let Some(path) = path else {
+        return (Config::default(), Vec::new());
+    };
+    match fs::read_to_string(path) {
+        Ok(text) => Config::parse(&text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => (Config::default(), Vec::new()),
+        Err(e) => (Config::default(), vec![format!("can't read it: {e}")]),
+    }
+}
+
+/// Writes the settings file whenever the settings to save change.
+struct Saver {
+    /// Where; nowhere if there's no home directory.
+    path: Option<PathBuf>,
+    /// The file as it was read, for the engine it names.
+    file: Config,
+    /// What was last written.
+    last: Option<Config>,
+    /// How pieces are drawn this session.
+    pieces: PieceChoice,
+    /// Whether writing has failed once, so it's said once.
+    failed: bool,
+}
+
+impl Saver {
+    /// Writes `app`'s settings if they changed since the last write.
+    fn save(&mut self, app: &mut App) {
+        let now = Config::from_app(app, self.pieces, &self.file);
+        if self.last.as_ref() == Some(&now) {
+            return;
+        }
+        let Some(path) = &self.path else {
+            return;
+        };
+        if let Err(e) = fs::write(path, now.to_text())
+            && !self.failed
+        {
+            self.failed = true;
+            app.status = format!("Couldn't save the settings to {}: {e}", path.display());
+        }
+        self.last = Some(now);
     }
 }
 
@@ -213,6 +297,7 @@ fn run(
     node: &mut Option<Node>,
     pieces: &mut Pieces,
     rx: &Receiver<Event>,
+    saver: &mut Saver,
 ) -> io::Result<()> {
     // A terminal that shows pictures has 24-bit colour, and the pictures need it to match.
     let true_color = matches!(pieces, Pieces::Images(_)) || ui::true_color_terminal();
@@ -250,6 +335,7 @@ fn run(
         while let Ok(event) = rx.try_recv() {
             handle(event, app, node, area, aspect);
         }
+        saver.save(app);
     }
     Ok(())
 }

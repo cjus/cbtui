@@ -63,6 +63,8 @@ Commands
                                 dark (alone: the next one)
   :new  :undo  :flip  :zoom  :go  :stop  :quit
 
+Settings are saved in ~/.cbtuirc as they change.
+
 ↑ ↓, PgUp, PgDn or the wheel scroll; any other key closes.";
 
 /// How wide the help box is, at most, borders included.

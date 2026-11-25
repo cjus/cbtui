@@ -93,10 +93,16 @@ changes the picture.
   last-move tints dimmed and black pieces pure black; black letters on its darkest squares
   are about 2:1, the faintest on any board, which the contrast test allows for this theme
   only. Tried in tmux in 24-bit colour (2026-11-25).
+- **Settings file: built** (nineteenth PR). `~/.cbtuirc` (or `$CBTUI_CONFIG`) holds the theme,
+  pieces, zoom, flip, the engine's sides, level, time and clock, and the analysis lines, as
+  `key = value` lines. It's read before the command line, which wins, and written whenever
+  one of them changes; the engine (`engine`, `engine-arg`) is read but only written back as
+  read. A PGN viewer or an analysis doesn't save the sides it sets for a while. A bad line
+  is skipped with a note on the status line. Tried in tmux with a scratch file (2026-11-25).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 114 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 119 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).

@@ -110,6 +110,27 @@ pub enum PieceChoice {
     Symbols,
 }
 
+impl PieceChoice {
+    /// The choice called `name`: `auto`, `letters` or `symbols`.
+    pub fn parse(name: &str) -> Option<PieceChoice> {
+        match name {
+            "auto" => Some(PieceChoice::Auto),
+            "letters" => Some(PieceChoice::Letters),
+            "symbols" => Some(PieceChoice::Symbols),
+            _ => None,
+        }
+    }
+
+    /// Its name, as `--pieces` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            PieceChoice::Auto => "auto",
+            PieceChoice::Letters => "letters",
+            PieceChoice::Symbols => "symbols",
+        }
+    }
+}
+
 /// How this session draws pieces.
 #[derive(Debug)]
 pub enum Pieces {

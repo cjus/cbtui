@@ -20,7 +20,8 @@
 //! - [`help`]: the help screen's text, and how much of it fits;
 //! - [`theme`]: the board's colours;
 //! - [`pieces`]: pieces as pictures where the terminal can show them, else as letters;
-//! - [`args`]: the command line.
+//! - [`args`]: the command line;
+//! - [`config`]: the settings file, `~/.cbtuirc`.
 //!
 //! The binary (`src/main.rs`) ties them together: it runs the terminal, and a loop that
 //! takes key presses, mouse clicks and engine messages from one channel, one at a time.
@@ -29,6 +30,7 @@ pub mod analysis;
 pub mod app;
 pub mod args;
 pub mod clock;
+pub mod config;
 pub mod help;
 pub mod node;
 pub mod pieces;
