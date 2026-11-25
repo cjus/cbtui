@@ -79,3 +79,5 @@ program; cbtui shows the licence it reports.
 - [x] CNP first, `cb2026-chess` for rules, Ratatui with its crossterm backend (2026-11-24).
 - [x] Pieces: pictures where the terminal can show them, Colin M. L. Burnett's set
       (BSD, from Wikimedia Commons); two letters, `WK`, elsewhere (Carlos, 2026-11-24).
+- [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
+      grow past 7×3 when there is room (Carlos, 2026-11-24).

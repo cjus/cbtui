@@ -46,6 +46,7 @@ Click a piece and then its square, or use the arrow keys and Enter, or type a mo
 | `u` | take back your last move |
 | `n` | new game |
 | `t` | turn the board around |
+| `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
 | `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
