@@ -20,6 +20,14 @@
 //! game. In a game, `[` and `]` look back through its moves ([`App::browse`]); the engine
 //! keeps playing meanwhile, and moves can't be made until the board is back at the end.
 //!
+//! ## Promotions
+//!
+//! A pawn clicked (or moved with the arrows) to the last rank doesn't promote at once: the
+//! picker opens ([`App::promotion`]), offering a queen, rook, bishop and knight on the squares
+//! from the promotion square towards the middle. A click on one, or `q` `r` `b` `n`, plays
+//! it; Enter is a queen, and Esc or a click elsewhere puts the pawn back. While it's open it
+//! takes every key, so `q` is a queen there, not quit. A typed move says its piece (`e8=N`).
+//!
 //! ## The engine's turn
 //!
 //! After every change, [`App`] checks whether the engine plays the side to move. If so, and no
@@ -38,7 +46,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
-use crate::rules::{self, Color, Game, Move, Position, Square};
+use crate::rules::{self, Color, Game, Move, Piece, Position, Square};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
 pub const PROGRESS_MS: u64 = 200;
@@ -52,6 +60,10 @@ pub const MAX_MOVETIME_MS: u64 = 600_000;
 /// What cbtui says when asked to use an engine it doesn't have.
 const NO_ENGINE: &str =
     "There's no engine. Start cbtui with --engine <path> (or $CBTUI_ENGINE) to play one.";
+
+/// What the status line says while the promotion picker is open.
+const PROMOTE: &str =
+    "Promote to: click a piece, or press q, r, b or n (Enter: queen, Esc: put the pawn back).";
 
 /// How many lines of the engine's stderr are kept.
 const STDERR_LINES: usize = 50;
@@ -132,6 +144,15 @@ pub struct Thinking {
     pub pv: Vec<String>,
 }
 
+/// A pawn's move to the last rank, waiting for the person to choose its piece.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Promotion {
+    /// Where the pawn promotes.
+    pub to: Square,
+    /// The legal promotions, queen first ([`rules::PROMOTION_PIECES`]).
+    pub choices: Vec<Move>,
+}
+
 /// A search the app is waiting on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
@@ -169,6 +190,8 @@ pub struct App {
     pub cursor_visible: bool,
     /// The square whose piece is picked up.
     pub selected: Option<Square>,
+    /// A promotion waiting for its piece to be chosen.
+    pub promotion: Option<Promotion>,
     /// The line being typed: a move, or a command after `:`.
     pub input: Option<String>,
     /// The message under the board.
@@ -214,6 +237,7 @@ impl App {
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
+            promotion: None,
             input: None,
             status,
             thinking: None,
@@ -336,6 +360,30 @@ impl App {
         }
     }
 
+    /// The promotion picker's squares and what each offers: the promotion square, then the
+    /// squares behind it towards the middle of the board, queen first.
+    pub fn promotion_squares(&self) -> Vec<(Square, Piece)> {
+        let Some(promotion) = &self.promotion else {
+            return Vec::new();
+        };
+        let color = self.game.position().side_to_move();
+        let file = promotion.to.file().index();
+        let rank = promotion.to.rank().index();
+        promotion
+            .choices
+            .iter()
+            .enumerate()
+            .filter_map(|(i, mv)| {
+                let rank = match color {
+                    Color::White => rank.checked_sub(i)?,
+                    Color::Black => rank + i,
+                };
+                let square = rules::square(file, rank)?;
+                Some((square, Piece::new(color, mv.promotion()?)))
+            })
+            .collect()
+    }
+
     /// A short description of a level, like `level 10 (1600)`.
     pub fn level_text(&self) -> Option<String> {
         let level = self.settings.level?;
@@ -371,6 +419,10 @@ impl App {
             self.show_help = false;
             return;
         }
+        if self.promotion.is_some() {
+            self.promotion_key(key.code, engine);
+            return;
+        }
         let stepped = if self.review.is_some() {
             self.review_key(key.code)
         } else {
@@ -403,6 +455,43 @@ impl App {
             }
             KeyCode::Esc => self.selected = None,
             _ => {}
+        }
+    }
+
+    /// The promotion picker's keys: a piece's letter (`q`, `r`, `b`, `n`), Enter or Space for a
+    /// queen, Esc to put the pawn back. Other keys do nothing while it's open.
+    fn promotion_key(&mut self, code: KeyCode, engine: &mut dyn Engine) {
+        let kind = match code {
+            KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char(' ') => rules::PieceType::Queen,
+            KeyCode::Char('r') => rules::PieceType::Rook,
+            KeyCode::Char('b') => rules::PieceType::Bishop,
+            KeyCode::Char('n') => rules::PieceType::Knight,
+            KeyCode::Esc => {
+                self.promotion = None;
+                self.selected = None;
+                self.status = "Promotion cancelled.".into();
+                return;
+            }
+            _ => return,
+        };
+        self.promote(kind, engine);
+    }
+
+    /// Plays the waiting promotion to `kind`, if it's one of the choices.
+    fn promote(&mut self, kind: rules::PieceType, engine: &mut dyn Engine) {
+        let Some(promotion) = self.promotion.take() else {
+            return;
+        };
+        match promotion
+            .choices
+            .iter()
+            .find(|mv| mv.promotion() == Some(kind))
+        {
+            Some(&mv) => {
+                self.selected = None;
+                self.human_move(mv, engine);
+            }
+            None => self.promotion = Some(promotion),
         }
     }
 
@@ -505,7 +594,34 @@ impl App {
             self.status = reason;
             return;
         }
+        if self.promotion.is_some() {
+            // A click on the picker chooses; anywhere else puts the pawn back.
+            let chosen = self
+                .promotion_squares()
+                .into_iter()
+                .find(|(at, _)| *at == square);
+            match chosen {
+                Some((_, piece)) => self.promote(piece.piece_type, engine),
+                None => {
+                    self.promotion = None;
+                    self.selected = None;
+                    self.status = "Promotion cancelled.".into();
+                }
+            }
+            return;
+        }
         let position = self.game.position().clone();
+        if let Some(from) = self.selected {
+            let choices = rules::promotions(&position, from, square);
+            if choices.len() > 1 {
+                self.promotion = Some(Promotion {
+                    to: square,
+                    choices,
+                });
+                self.status = PROMOTE.into();
+                return;
+            }
+        }
         if let Some(from) = self.selected
             && let Some(mv) = rules::move_between(&position, from, square)
         {
@@ -708,6 +824,7 @@ impl App {
         self.browse = None;
         self.game_number += 1;
         self.selected = None;
+        self.promotion = None;
         self.thinking = None;
         self.status = "New game.".into();
         self.maybe_start_engine(engine);
@@ -730,6 +847,7 @@ impl App {
             self.game.undo();
         }
         self.selected = None;
+        self.promotion = None;
         self.thinking = None;
         self.status = "Took back.".into();
         self.maybe_start_engine(engine);
@@ -925,6 +1043,9 @@ impl App {
         let comment = score.map(|score| format!("{}/{}", score_text(score), result.depth));
         let san = position.to_san(mv);
         if self.game.play_with_comment(mv, comment).is_ok() {
+            // A picker opened for the side the engine just moved for is stale now.
+            self.promotion = None;
+            self.selected = None;
             self.status = format!("{} played {san}.", self.node.name);
             self.after_move(engine);
         }
@@ -1190,6 +1311,107 @@ mod tests {
         app.handle_click(sq("g1"), &mut engine);
         assert_eq!(app.game.moves()[0].san, "O-O");
         assert_eq!(engine.searches[0].position.moves, ["e1g1"]);
+    }
+
+    fn promoting_app() -> App {
+        let settings = Settings {
+            engine_plays: [false, false],
+            fen: Some("8/4P3/8/8/8/8/8/K6k w - - 0 1".into()),
+            ..Settings::default()
+        };
+        App::new(node(), settings).unwrap()
+    }
+
+    #[test]
+    fn a_promotion_opens_a_picker_and_a_click_on_it_chooses() {
+        let (mut app, mut engine) = (promoting_app(), FakeEngine::default());
+        app.handle_click(sq("e7"), &mut engine);
+        app.handle_click(sq("e8"), &mut engine);
+        assert!(
+            app.game.moves().is_empty(),
+            "nothing played until a piece is chosen"
+        );
+        let picker: Vec<(Square, char)> = app
+            .promotion_squares()
+            .into_iter()
+            .map(|(at, piece)| (at, piece.to_fen_char()))
+            .collect();
+        assert_eq!(
+            picker,
+            [
+                (sq("e8"), 'Q'),
+                (sq("e7"), 'R'),
+                (sq("e6"), 'B'),
+                (sq("e5"), 'N')
+            ]
+        );
+        app.handle_click(sq("e5"), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "e8=N");
+        assert_eq!(app.promotion, None);
+    }
+
+    #[test]
+    fn the_picker_takes_a_letter_enter_for_a_queen_or_esc() {
+        let (mut app, mut engine) = (promoting_app(), FakeEngine::default());
+        app.handle_click(sq("e7"), &mut engine);
+        app.handle_click(sq("e8"), &mut engine);
+        press(&mut app, &mut engine, KeyCode::Esc);
+        assert_eq!(app.promotion, None);
+        assert!(app.game.moves().is_empty());
+
+        // A letter chooses; other keys wait.
+        app.handle_click(sq("e7"), &mut engine);
+        app.handle_click(sq("e8"), &mut engine);
+        app.handle_key(key('x'), &mut engine);
+        assert!(app.promotion.is_some());
+        app.handle_key(key('r'), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "e8=R");
+
+        // With the keyboard: Enter on e8 opens the picker, and Enter again is a queen.
+        let (mut app, mut engine) = (promoting_app(), FakeEngine::default());
+        app.cursor = sq("e7");
+        press(&mut app, &mut engine, KeyCode::Enter);
+        press(&mut app, &mut engine, KeyCode::Up);
+        press(&mut app, &mut engine, KeyCode::Enter);
+        assert!(app.promotion.is_some());
+        press(&mut app, &mut engine, KeyCode::Enter);
+        assert_eq!(app.game.moves()[0].san, "e8=Q");
+
+        // `q` is a queen here, not quit.
+        let (mut app, mut engine) = (promoting_app(), FakeEngine::default());
+        app.handle_click(sq("e7"), &mut engine);
+        app.handle_click(sq("e8"), &mut engine);
+        app.handle_key(key('q'), &mut engine);
+        assert!(!app.quit);
+        assert_eq!(app.game.moves()[0].san, "e8=Q");
+    }
+
+    #[test]
+    fn blacks_picker_runs_up_the_board_from_the_first_rank() {
+        let settings = Settings {
+            engine_plays: [false, false],
+            fen: Some("K6k/8/8/8/8/8/3p4/8 b - - 0 1".into()),
+            ..Settings::default()
+        };
+        let (mut app, mut engine) = (App::new(node(), settings).unwrap(), FakeEngine::default());
+        app.handle_click(sq("d2"), &mut engine);
+        app.handle_click(sq("d1"), &mut engine);
+        let squares: Vec<Square> = app.promotion_squares().iter().map(|(at, _)| *at).collect();
+        assert_eq!(squares, [sq("d1"), sq("d2"), sq("d3"), sq("d4")]);
+        app.handle_click(sq("d3"), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "d1=B");
+    }
+
+    #[test]
+    fn a_click_off_the_picker_puts_the_pawn_back() {
+        let (mut app, mut engine) = (promoting_app(), FakeEngine::default());
+        app.handle_click(sq("e7"), &mut engine);
+        app.handle_click(sq("e8"), &mut engine);
+        app.handle_click(sq("a8"), &mut engine);
+        assert_eq!(app.promotion, None);
+        assert_eq!(app.selected, None);
+        assert!(app.game.moves().is_empty());
+        assert!(app.status.contains("cancelled"), "{}", app.status);
     }
 
     #[test]

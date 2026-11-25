@@ -30,6 +30,10 @@
 //! the list scrolled to it), and the shown move's comments and the variations that start
 //! there. Looking back in a game (`[`), the move list highlights the move shown.
 //!
+//! A promotion waiting for its piece ([`App::promotion`]) draws the four choices on the
+//! board, on squares of their own colour, from the promotion square towards the middle: the
+//! squares a click chooses from, so the mouse needs no geometry of its own.
+//!
 //! Pitfall: a board is usually limited by the terminal's height, not its width, so zooming a
 //! wide terminal gains only the rows the frame and keys line took. It gains most in narrow or
 //! tall ones, where the side panels' width was what held the board back.
@@ -261,6 +265,7 @@ pub struct Palette {
     white_piece: Tint,
     black_piece: Tint,
     target: Tint,
+    picker: Tint,
 }
 
 impl Palette {
@@ -277,6 +282,7 @@ impl Palette {
         white_piece: Tint::Rgb(255, 255, 255),
         black_piece: Tint::Rgb(20, 20, 20),
         target: Tint::Rgb(60, 90, 50),
+        picker: Tint::Rgb(125, 135, 160),
     };
 
     /// The nearest of the 256 standard colours.
@@ -292,6 +298,7 @@ impl Palette {
         white_piece: Tint::Indexed(231),
         black_piece: Tint::Indexed(16),
         target: Tint::Indexed(22),
+        picker: Tint::Indexed(103),
     };
 
     /// The palette for this terminal, from `COLORTERM`.
@@ -340,6 +347,12 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
                 draw_notes(frame, notes, review);
                 "← → step · ↑ ↓ start/end · 1-9 variation · :play <side> play on · t flip · z zoom · ? help · q quit"
             }
+            None if app.promotion.is_some() => {
+                draw_info(frame, panels.info, app);
+                draw_moves(frame, panels.moves, app);
+                draw_engine(frame, panels.engine, app);
+                "promote: click a piece · q queen · r rook · b bishop · n knight · Enter queen · Esc put back"
+            }
             None => {
                 draw_info(frame, panels.info, app);
                 draw_moves(frame, panels.moves, app);
@@ -364,6 +377,7 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
     let position = &shown;
     let last = app.shown_last_move();
     let targets = app.targets();
+    let picker = app.promotion_squares();
     let check_square = position
         .in_check()
         .then(|| position.king_square(position.side_to_move()));
@@ -374,7 +388,8 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
             let light = (file + rank) % 2 == 1;
             let is_last =
                 last.is_some_and(|mv| mv.from() == square || rules::destination(mv) == square);
-            let piece = position.piece_at(square);
+            let offered = picker.iter().find(|(at, _)| *at == square).map(|&(_, p)| p);
+            let piece = offered.or_else(|| position.piece_at(square));
             let mut bg = match (light, is_last) {
                 (true, false) => palette.light,
                 (false, false) => palette.dark,
@@ -392,6 +407,9 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
             }
             if app.cursor_visible && app.cursor == square {
                 bg = palette.cursor;
+            }
+            if offered.is_some() {
+                bg = palette.picker;
             }
             let x = g.x + column as u16 * g.width;
             let y = g.y + line as u16 * g.height;
@@ -786,6 +804,8 @@ pub const HELP: &str = "\
 Moves
   Click a piece, then its square. Or use the arrows and Enter.
   Or type a move: e4, Nf3, exd5, O-O, e8=N, or e2e4. Enter plays it.
+  A pawn on the last rank offers Q R B N there: click one, or press
+  q, r, b or n (Enter: queen, Esc: put it back).
 
 Keys
   m        the engine moves (now, if it is thinking)
@@ -886,6 +906,37 @@ mod tests {
         assert!(text.contains("White: you   Black: eng"), "{text}");
         assert!(text.contains("WK") && text.contains("BP"), "{text}");
         assert!(text.contains("White to move"), "{text}");
+    }
+
+    #[test]
+    fn the_promotion_picker_shows_its_pieces_on_the_board() {
+        let node = NodeSummary {
+            name: "eng".into(),
+            ..NodeSummary::default()
+        };
+        let settings = Settings {
+            engine_plays: [false, false],
+            fen: Some("8/4P3/8/8/8/8/8/K6k w - - 0 1".into()),
+            ..Settings::default()
+        };
+        let mut app = App::new(node, settings).unwrap();
+        app.selected = Some("e7".parse().unwrap());
+        app.promotion = Some(crate::app::Promotion {
+            to: "e8".parse().unwrap(),
+            choices: rules::promotions(
+                app.game.position(),
+                "e7".parse().unwrap(),
+                "e8".parse().unwrap(),
+            ),
+        });
+        let text = screen(&app, 100, 32);
+        for piece in ["WQ", "WR", "WB", "WN"] {
+            assert!(text.contains(piece), "{piece}: {text}");
+        }
+        // Down the e-file: the queen's row is above the rook's.
+        let row = |piece: &str| text.lines().position(|l| l.contains(piece)).unwrap();
+        assert!(row("WQ") < row("WR") && row("WR") < row("WB") && row("WB") < row("WN"));
+        assert!(text.contains("q queen"), "{text}");
     }
 
     #[test]
