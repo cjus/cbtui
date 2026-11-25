@@ -34,7 +34,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cnp::engine::{EngineProgress, Levels, Progress, Search, SearchParams, Stop, StopParams};
+use cnp::engine::{
+    EngineProgress, Evaluate, EvaluateParams, Levels, Progress, Search, SearchParams, Stop,
+    StopParams, Techniques,
+};
 use cnp::lifecycle::{
     Exit, Initialize, InitializeParams, InitializeResult, PROTOCOL_VERSION, Shutdown, Software,
 };
@@ -207,6 +210,11 @@ impl Node {
         self.request::<Levels>(&NoParams)
     }
 
+    /// Sends `engine/techniques`, returning the request's id.
+    pub fn techniques(&mut self) -> Result<i64, String> {
+        self.request::<Techniques>(&NoParams)
+    }
+
     /// Stops the engine and waits briefly for it to exit, killing it if it doesn't.
     pub fn shutdown(mut self) {
         let _ = self.request::<Shutdown>(&NoParams);
@@ -240,6 +248,8 @@ pub trait Engine {
     fn search(&mut self, params: &SearchParams) -> Result<i64, String>;
     /// Sends `engine/stop` for the search with this id.
     fn stop(&mut self, id: i64) -> Result<(), String>;
+    /// Sends `engine/evaluate`, returning the request's id.
+    fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String>;
 }
 
 impl Engine for Node {
@@ -250,6 +260,10 @@ impl Engine for Node {
     fn stop(&mut self, id: i64) -> Result<(), String> {
         self.request::<Stop>(&StopParams { id: id.into() })
             .map(|_| ())
+    }
+
+    fn evaluate(&mut self, params: &EvaluateParams) -> Result<i64, String> {
+        self.request::<Evaluate>(params)
     }
 }
 
@@ -265,6 +279,10 @@ impl Engine for NoEngine {
 
     fn stop(&mut self, _id: i64) -> Result<(), String> {
         Ok(())
+    }
+
+    fn evaluate(&mut self, _params: &EvaluateParams) -> Result<i64, String> {
+        Err("No engine is connected.".into())
     }
 }
 

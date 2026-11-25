@@ -50,7 +50,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui_image::Image;
 
 use crate::analysis::Analysis;
-use crate::app::{App, score_text};
+use crate::app::{App, Overlay, score_text, white_view};
 use crate::clock::clock_text;
 use crate::pieces::{self, Pieces};
 use crate::review::Review;
@@ -75,6 +75,16 @@ const ENGINE_PANEL_MIN_ROWS: u16 = 5;
 
 /// The move list's height, frame included, that the engine panel leaves it if it can.
 const MOVES_PANEL_MIN_ROWS: u16 = 5;
+
+/// How wide the evaluation and techniques overlays are, at most.
+const OVERLAY_WIDTH: u16 = 72;
+
+/// The narrowest and widest an evaluation term's name column is.
+const EVAL_NAME_MIN: usize = 4;
+const EVAL_NAME_MAX: usize = 32;
+
+/// Rows under the techniques for the highlighted one's description and the keys.
+const TECHNIQUES_FOOTER_ROWS: u16 = 4;
 
 /// How many moves of the best line the zoomed status line shows while analysing.
 const ZOOM_PV_MOVES: usize = 4;
@@ -374,9 +384,185 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
             panels.keys,
         );
     }
+    match app.overlay {
+        Some(Overlay::Evaluation) => draw_evaluation(frame, area, app),
+        Some(Overlay::Techniques { cursor }) => draw_techniques(frame, area, app, cursor),
+        None => {}
+    }
     if app.show_help {
         draw_help(frame, area, app);
     }
+}
+
+/// A rectangle `width` by `height`, centred in `area` and no bigger than it.
+fn centred(area: Rect, width: u16, height: u16) -> Rect {
+    let (width, height) = (width.min(area.width), height.min(area.height));
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Centipawns as pawns with a sign: `+0.30`.
+fn pawns(cp: i32) -> String {
+    format!("{:+.2}", f64::from(cp) / 100.0)
+}
+
+/// The evaluation overlay: the score, then each term for White and Black and the difference,
+/// in pawns.
+fn draw_evaluation(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(evaluation) = &app.evaluation else {
+        return;
+    };
+    let result = &evaluation.result;
+    let side = evaluation.position.side_to_move();
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("Score {}", score_text(white_view(result.score, side))),
+            bold,
+        ),
+        Span::raw("  for White, the position as it stands, without a search"),
+    ])];
+    if let Some(search) = result.search_score {
+        lines.push(Line::from(format!(
+            "The search evaluates it {}: it uses another evaluation.",
+            score_text(white_view(search, side))
+        )));
+    }
+    if let Some(quiet) = result.quiet.as_ref().filter(|moves| !moves.is_empty()) {
+        lines.push(Line::from(format!(
+            "Evaluated after the captures settle: {}",
+            rules::line_to_san(&evaluation.position, quiet).join(" ")
+        )));
+    }
+    lines.push(Line::from(""));
+    let name_width = result
+        .terms
+        .iter()
+        .map(|t| t.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(EVAL_NAME_MIN, EVAL_NAME_MAX);
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{:<name_width$} {:>8} {:>8} {:>8}",
+            "Term", "White", "Black", "Net"
+        ),
+        bold,
+    )));
+    for term in &result.terms {
+        let name: String = term.name.chars().take(name_width).collect();
+        lines.push(Line::from(format!(
+            "{name:<name_width$} {:>8} {:>8} {:>8}",
+            pawns(term.white),
+            pawns(term.black),
+            pawns(term.white - term.black)
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "In pawns; Net is White's less Black's. Any key closes.",
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+    let rect = centred(area, OVERLAY_WIDTH, lines.len() as u16 + 2);
+    frame.render_widget(Clear, rect);
+    let title = format!(" Evaluation · {} ", evaluation.label);
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// The techniques overlay: each with a box for on or off (`*` when switched from its
+/// default), the highlighted one's description below, and the keys.
+fn draw_techniques(frame: &mut Frame, area: Rect, app: &App, cursor: usize) {
+    let Some(techniques) = &app.techniques else {
+        return;
+    };
+    let height =
+        (techniques.len() as u16 + TECHNIQUES_FOOTER_ROWS + 2).min(area.height.saturating_sub(2));
+    let rect = centred(area, OVERLAY_WIDTH, height);
+    frame.render_widget(Clear, rect);
+    let title = match app.settings.techniques.len() {
+        0 => " Techniques · all at their defaults ".to_string(),
+        n => format!(" Techniques · {n} switched "),
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    let [list, about] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(TECHNIQUES_FOOTER_ROWS),
+    ])
+    .areas(inner);
+    let rows = list.height as usize;
+    // A name more than one technique has (an engine might call several "Evaluation") says
+    // too little, so those show their descriptions.
+    let label = |technique: &cnp::engine::Technique| {
+        let shared = techniques
+            .iter()
+            .filter(|t| t.name == technique.name)
+            .count()
+            > 1;
+        if shared && !technique.description.is_empty() {
+            technique.description.clone()
+        } else {
+            technique.name.clone()
+        }
+    };
+    // Keeps the highlighted one in view, a little above the bottom when it can.
+    let skip = cursor.saturating_sub(rows.saturating_sub(1));
+    let lines: Vec<Line> = techniques
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .take(rows)
+        .map(|(i, technique)| {
+            let on = app.technique_on(technique);
+            let switched = app.settings.techniques.contains_key(&technique.id);
+            let text = format!(
+                "[{}]{} {}",
+                if on { "x" } else { " " },
+                if switched { "*" } else { " " },
+                label(technique)
+            );
+            let style = if i == cursor {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), list);
+    let mut about_lines = Vec::new();
+    if let Some(technique) = techniques.get(cursor) {
+        about_lines.push(Line::from(technique.description.clone()));
+        let mut facts = format!(
+            "id {}, {} by default",
+            technique.id,
+            if technique.default { "on" } else { "off" }
+        );
+        if !technique.requires.is_empty() {
+            facts.push_str(&format!("; needs {}", technique.requires.join(", ")));
+        }
+        about_lines.push(Line::from(Span::styled(
+            facts,
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    let [description, keys] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(about);
+    frame.render_widget(
+        Paragraph::new(about_lines).wrap(Wrap { trim: true }),
+        description,
+    );
+    frame.render_widget(
+        Paragraph::new("↑ ↓ choose · Space switch · d default · Esc close")
+            .style(Style::default().add_modifier(Modifier::DIM)),
+        keys,
+    );
 }
 
 fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pieces: &mut Pieces) {
@@ -481,6 +667,17 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
         Some(clocks) => format!("{} clock (cbtui times {})", clocks.control(), app.node.name),
         None => format!("{} ms a move", app.settings.movetime_ms),
     };
+    if !app.settings.techniques.is_empty() {
+        strength.push_str(&format!(
+            " · {} technique{} switched",
+            app.settings.techniques.len(),
+            if app.settings.techniques.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
     if let Some(level) = app.level_text() {
         strength = format!("{level} · {strength}");
     }
@@ -916,6 +1113,7 @@ Keys
   z        zoom: the board fills the screen (again for the panels)
   i        analyse: the engine studies the board until i again; you
            move for both sides, and in the PGN viewer it follows you
+  v        the engine's evaluation of the board, term by term
   :        type a command
   ?        this help
   q        quit
@@ -930,6 +1128,7 @@ Commands
   :play white|black|both|none   which sides the engine plays
   :level <n>|max                the engine's playing level
   :lines <n>                    how many lines an analysis shows
+  :techniques                   switch the engine's search techniques
   :time <ms>                    how long it thinks a move
   :clock <min>+<sec>|off        play to a clock (5+3), from the first move
   :resign  :draw                resign, or offer the engine a draw
@@ -1090,6 +1289,68 @@ mod tests {
             assert!(text.contains(row), "{row}: {text}");
         }
         assert!(text.contains("i analyse"), "{text}");
+    }
+
+    #[test]
+    fn the_evaluation_shows_each_term_and_the_difference_in_pawns() {
+        let mut app = app();
+        app.evaluation = Some(crate::app::Evaluation {
+            label: "After 1. e4".into(),
+            position: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+                .parse::<rules::Position>()
+                .unwrap(),
+            result: serde_json::from_value(serde_json::json!({
+                "score": {"cp": -33}, "searchScore": {"cp": -11}, "quiet": [],
+                "terms": [
+                    {"id": "material", "name": "Material", "white": 3940, "black": 3940},
+                    {"id": "mobility", "name": "Mobility", "white": -89, "black": -117}
+                ]
+            }))
+            .unwrap(),
+        });
+        app.overlay = Some(Overlay::Evaluation);
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("Evaluation · After 1. e4"), "{text}");
+        // Black to move scored -0.33: +0.33 for White.
+        assert!(text.contains("Score +0.33"), "{text}");
+        assert!(text.contains("The search evaluates it +0.11"), "{text}");
+        assert!(
+            text.contains("Material   +39.40   +39.40    +0.00"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Mobility    -0.89    -1.17    +0.28"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_techniques_show_on_off_and_what_was_switched() {
+        let mut app = app();
+        app.techniques = Some(
+            serde_json::from_value(serde_json::json!([
+                {"id": "alphabeta", "name": "Alpha-beta pruning", "description": "Cuts branches.", "default": true},
+                {"id": "probcut", "name": "ProbCut", "description": "Guesses cuts.", "default": false, "requires": ["alphabeta"]},
+                {"id": "mobility", "name": "Evaluation", "description": "Evaluation: mobility", "default": true},
+                {"id": "pawns", "name": "Evaluation", "description": "Evaluation: pawns", "default": true}
+            ]))
+            .unwrap(),
+        );
+        app.settings.techniques.insert("probcut".into(), true);
+        app.overlay = Some(Overlay::Techniques { cursor: 1 });
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("Techniques · 1 switched"), "{text}");
+        assert!(text.contains("[x]  Alpha-beta pruning"), "{text}");
+        assert!(text.contains("[x]* ProbCut"), "{text}");
+        assert!(text.contains("Guesses cuts."), "{text}");
+        assert!(
+            text.contains("id probcut, off by default; needs alphabeta"),
+            "{text}"
+        );
+        assert!(text.contains("1 technique switched"), "{text}");
+        // Two called "Evaluation" show what tells them apart.
+        assert!(text.contains("[x]  Evaluation: mobility"), "{text}");
+        assert!(text.contains("[x]  Evaluation: pawns"), "{text}");
     }
 
     #[test]

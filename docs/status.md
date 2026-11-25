@@ -46,11 +46,18 @@ changes the picture.
   plays neither side meanwhile and the clocks stop. cb2026 throttles its progress with one
   interval for all lines, so with several lines cbtui asks for every report
   (`progressMs` 0): about one message per line per depth. Tried in tmux (2026-11-24).
+- **Evaluation and techniques: built** (tenth PR); M3 is done. `v` or `:eval` shows the
+  engine's evaluation of the position on the board, term by term (`engine/evaluate`, quiet
+  when it can). `:techniques` lists the engine's techniques (`engine/techniques`, asked once
+  at the start) to switch with Space; switches go with every search, and an analysis starts
+  again with them. cb2026 names several techniques alike ("Evaluation", "Time"), so a shared
+  name shows the description instead. Tried in tmux (2026-11-24): the terms of 1. e4 add up
+  to its +0.33, and with alpha-beta off an analysis crawls to depth 4.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 88 unit tests (the app against a fake engine, the CNP client against a fake node over
-  pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
+- Tests: 92 unit tests (the app against a fake engine, the CNP client against a fake node over
+  pipes, the layout and mouse mapping with Ratatui's test backend), and 3 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
 
@@ -70,8 +77,8 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M3 (`docs/PRD.md`): the evaluation broken into terms, technique switches. (Analysis with
-several lines is done.) Later for the viewer: more than the first game
+M4 (`docs/PRD.md`): following the search at its root (`engine/root`), and browsing its tree
+(`engine/tree`, `engine/treeNode`). Later for the viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on

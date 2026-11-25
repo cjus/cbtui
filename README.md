@@ -53,7 +53,8 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 | `t` | turn the board around |
 | `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
 | `i` | analyse: the engine studies the position on the board, several lines at once, until `i` again |
-| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
+| `v` | the engine's evaluation of the position on the board, term by term |
+| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:techniques`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
 With a clock, the clocks start with the first move and stand beside the players' names. An
@@ -67,6 +68,11 @@ or look back with `[` `]`, and the engine panel follows the position on the boar
 best lines (`:lines <n>` for how many, if the engine can find several). In the PGN viewer it
 takes the place of the notes and follows you through the game. `i` again puts back who
 played what.
+
+`v` asks the engine what its evaluation of the position on the board is made of (material,
+mobility, king safety, whatever its terms are), and `:techniques` lists the search
+techniques it can switch, to turn them off or on for every search after: try analysing with
+null-move pruning off. Both appear only with an engine that has them.
 
 ## View a PGN game
 
