@@ -44,6 +44,10 @@ cd cbtui-*/
 On Windows, unzip it, open the folder in Windows Terminal and run `.\cbtui.exe`. The macOS
 programs are signed and notarised by Apple. The release notes say which download is which.
 
+To see what it can do before playing, run `./cbtui --demo`: a short game that plays itself
+through the features (zoom and every theme included), then hands it over to you. Any key
+takes over sooner.
+
 ## Install from source
 
 You need Rust 1.97 or newer, and an engine.
@@ -73,6 +77,7 @@ cbtui --fen "<FEN>"         # start from a position
 cbtui --theme blue          # the board: brown (default), blue, green, grey, or dark
 cbtui --ponder on           # the engine thinks on your time too, if it can
 cbtui --engine ~/bin/cb2027 # another CNP engine (or set CBTUI_ENGINE)
+cbtui --demo                # a short game that shows the features by itself
 cbtui --help                # every option
 ```
 

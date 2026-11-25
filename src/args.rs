@@ -43,6 +43,8 @@ Options:
   --fen <FEN>            Start from this position
   --pgn <file>           View the first game in a PGN file: the arrows step through it,
                          variations included. Works without an engine
+  --demo                 Show what cbtui can do: a short game that plays itself, from the
+                         default settings (and saving none); any key takes over
   --theme <name>         The board's colours: brown (default), blue, green, grey, or
                          dark for dark terminals
   --pieces <style>       auto (default): pictures if the terminal can show them (not
@@ -70,6 +72,8 @@ pub enum Args {
         pieces: PieceChoice,
         /// A PGN file to view, if any.
         pgn: Option<String>,
+        /// Whether to run the demo (`--demo`).
+        demo: bool,
     },
     /// Print the help.
     Help,
@@ -90,8 +94,18 @@ pub fn parse(
         .filter(|e| !e.is_empty())
         .or_else(|| file.engine.clone());
     let mut engine_args: Vec<String> = Vec::new();
-    let mut settings = file.apply(Settings::default());
-    let mut pieces = file.pieces.unwrap_or_default();
+    let args: Vec<String> = args.into_iter().collect();
+    // The demo starts from the defaults, not the settings file, with pondering to show.
+    let demo = args.iter().any(|a| a == "--demo");
+    let (mut settings, mut pieces) = if demo {
+        (demo_settings(), PieceChoice::default())
+    } else {
+        (
+            file.apply(Settings::default()),
+            file.pieces.unwrap_or_default(),
+        )
+    };
+    let mut play_given = false;
     let mut pgn = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -101,7 +115,9 @@ pub fn parse(
             "-V" | "--version" => return Ok(Args::Version),
             "--engine" => engine = Some(value("--engine")?),
             "--engine-arg" => engine_args.push(value("--engine-arg")?),
+            "--demo" => {}
             "--play" => {
+                play_given = true;
                 let side = value("--play")?;
                 settings.engine_plays = config::parse_play(&side)
                     .ok_or_else(|| format!("--play takes {PLAY_NAMES}, not `{side}`"))?;
@@ -154,6 +170,9 @@ pub fn parse(
             other => return Err(format!("unknown option `{other}` (try --help)")),
         }
     }
+    if demo && (play_given || pgn.is_some() || settings.fen.is_some()) {
+        return Err("--demo plays its own game: leave out --play, --fen and --pgn".into());
+    }
     if pgn.is_some() && settings.fen.is_some() {
         return Err("--pgn and --fen both say where to start: give one".into());
     }
@@ -169,7 +188,16 @@ pub fn parse(
         settings,
         pieces,
         pgn,
+        demo,
     })
+}
+
+/// The demo's settings: the defaults, with pondering on to show it.
+fn demo_settings() -> Settings {
+    Settings {
+        ponder: true,
+        ..Settings::default()
+    }
 }
 
 #[cfg(test)]
@@ -228,6 +256,34 @@ mod tests {
         );
         assert_eq!(settings.theme, crate::theme::Theme::Dark);
         assert_eq!(settings.engine_plays, [false, true]);
+    }
+
+    #[test]
+    fn the_demo_starts_from_the_defaults_with_pondering() {
+        let (file, _) = Config::parse("engine = /opt/cb2027\ntheme = green\nplay = white\n");
+        let parse_with = |args: &[&str]| parse(args.iter().map(|s| s.to_string()), None, &file);
+        let Ok(Args::Run {
+            engine,
+            settings,
+            demo,
+            ..
+        }) = parse_with(&["--demo", "--theme", "blue"])
+        else {
+            panic!()
+        };
+        assert!(demo);
+        assert_eq!(engine, "/opt/cb2027", "the file's engine still plays");
+        assert_eq!(settings.engine_plays, [false, true], "not the file's sides");
+        assert_eq!(settings.theme, crate::theme::Theme::Blue);
+        assert!(settings.ponder);
+        for clash in [
+            &["--play", "white"][..],
+            &["--fen", "8/8/8/8/8/8/8/K6k w - - 0 1"],
+            &["--pgn", "g.pgn"],
+        ] {
+            let args: Vec<&str> = ["--demo"].iter().chain(clash).copied().collect();
+            assert!(parse_with(&args).is_err(), "{clash:?}");
+        }
     }
 
     #[test]

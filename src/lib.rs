@@ -21,7 +21,8 @@
 //! - [`theme`]: the board's colours;
 //! - [`pieces`]: pieces as pictures where the terminal can show them, else as letters;
 //! - [`args`]: the command line;
-//! - [`config`]: the settings file, `~/.cbtuirc`.
+//! - [`config`]: the settings file, `~/.cbtuirc`;
+//! - [`demo`]: `--demo`, a short game that shows the features by itself.
 //!
 //! The binary (`src/main.rs`) ties them together: it runs the terminal, and a loop that
 //! takes key presses, mouse clicks and engine messages from one channel, one at a time.
@@ -31,6 +32,7 @@ pub mod app;
 pub mod args;
 pub mod clock;
 pub mod config;
+pub mod demo;
 pub mod help;
 pub mod node;
 pub mod pieces;
