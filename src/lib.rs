@@ -12,6 +12,7 @@
 //! - [`rules`]: legality, notation and game endings, from a rules library;
 //! - [`clock`]: chess clocks with an increment;
 //! - [`analysis`]: the engine's lines while it analyses the position on the board;
+//! - [`root`]: following a search at its root, move by move;
 //! - [`app`]: the state of a session, and what input and engine messages do to it;
 //! - [`review`]: a game read from PGN, with its variations, to step through;
 //! - [`ui`]: drawing it with [Ratatui](https://ratatui.rs);
@@ -28,5 +29,6 @@ pub mod clock;
 pub mod node;
 pub mod pieces;
 pub mod review;
+pub mod root;
 pub mod rules;
 pub mod ui;
