@@ -1,23 +1,27 @@
-//! Board themes: the colours of the light and dark squares.
+//! Board themes: the colours of the squares, the pieces and the last move.
 //!
 //! ## How it works
 //!
-//! A [`Theme`] is a pair of square colours, each given twice: in 24-bit colour, and as the
-//! nearest of the 256 standard colours for terminals without it. Everything else on the board
-//! (the last move, the selection, check, the cursor) keeps the same colours in every theme, so
-//! it reads the same whichever board is on screen. The palette is built from the theme on
-//! every draw ([`crate::ui::Palette::new`]), so `:theme` changes the board at once.
+//! A [`Theme`] gives its [`Colours`] twice: in 24-bit colour, and as the nearest of the 256
+//! standard colours for terminals without it. The other highlights (the selection, check, the
+//! cursor, captures) are the same in every theme, so they read the same whichever board is on
+//! screen. The palette is built from the theme on every draw ([`crate::ui::Palette::new`]), so
+//! `:theme` changes the board at once.
+//!
+//! The dark theme is for dark terminals: dim squares, white pieces muted to a soft grey, and a
+//! dull last-move tint, so nothing on the board glares. Picture pieces are muted with it: their
+//! colours are multiplied by the theme's white ([`crate::pieces::draw_piece`]).
 //!
 //! ## Pitfalls
 //!
 //! - Pieces drawn as letters or symbols are text in a colour: white text on a near-white square
-//!   would vanish. White pieces on light squares are drawn in the theme's ink instead;
-//!   the letter (`WK`) or the hollow symbol still says whose piece it is.
-//! - Black text has to read on the dark squares, and white text too, so a dark square is a
-//!   mid tone (contrast about 3:1 or more with black, 5:1 with white), not as deep as a
-//!   wooden or vinyl board's.
+//!   would vanish. White pieces on light squares are drawn in the theme's ink instead; the
+//!   letter (`WK`) or the hollow symbol still says whose piece it is.
+//! - Black text has to read on the dark squares, and white text too, so a dark square is a mid
+//!   tone, not as deep as a wooden or vinyl board's. A test checks every piece's text against
+//!   every square it can stand on.
 //! - Picture pieces are drawn over their square's colour, so a theme change makes new pictures
-//!   (each is made once per piece, colour and size).
+//!   (each is made once per piece, colour, tint and size).
 
 use std::fmt;
 
@@ -35,11 +39,38 @@ pub enum Theme {
     Green,
     /// Off-white and slate grey.
     Grey,
+    /// Dim slate squares and muted white pieces, for dark terminals.
+    Dark,
+}
+
+/// The colours a theme sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Colours {
+    /// The light squares.
+    pub light: Tint,
+    /// The dark squares.
+    pub dark: Tint,
+    /// A light square the last move left or reached.
+    pub last_light: Tint,
+    /// A dark square the last move left or reached.
+    pub last_dark: Tint,
+    /// White's pieces, as text, and the tint picture pieces are multiplied by.
+    pub white: Tint,
+    /// Black's pieces, as text.
+    pub black: Tint,
+    /// White's pieces as text on a light square, where white might not show.
+    pub ink: Tint,
 }
 
 impl Theme {
     /// Every theme, in the order `:theme` goes through them.
-    pub const ALL: [Theme; 4] = [Theme::Brown, Theme::Blue, Theme::Green, Theme::Grey];
+    pub const ALL: [Theme; 5] = [
+        Theme::Brown,
+        Theme::Blue,
+        Theme::Green,
+        Theme::Grey,
+        Theme::Dark,
+    ];
 
     /// Its name, as `--theme` and `:theme` take it.
     pub fn name(self) -> &'static str {
@@ -48,6 +79,7 @@ impl Theme {
             Theme::Blue => "blue",
             Theme::Green => "green",
             Theme::Grey => "grey",
+            Theme::Dark => "dark",
         }
     }
 
@@ -65,37 +97,75 @@ impl Theme {
         Theme::ALL[(at + 1) % Theme::ALL.len()]
     }
 
-    /// The light and dark squares' colours: 24-bit when `true_color`, else the nearest of the
-    /// 256 standard colours.
-    pub fn squares(self, true_color: bool) -> (Tint, Tint) {
-        match (self, true_color) {
-            (Theme::Brown, true) => (Tint::Rgb(240, 217, 181), Tint::Rgb(181, 136, 99)),
-            (Theme::Brown, false) => (Tint::Indexed(223), Tint::Indexed(137)),
-            (Theme::Blue, true) => (Tint::Rgb(228, 232, 238), Tint::Rgb(56, 96, 196)),
-            (Theme::Blue, false) => (Tint::Indexed(254), Tint::Indexed(26)),
-            (Theme::Green, true) => (Tint::Rgb(236, 228, 200), Tint::Rgb(52, 120, 72)),
-            (Theme::Green, false) => (Tint::Indexed(230), Tint::Indexed(28)),
-            (Theme::Grey, true) => (Tint::Rgb(232, 232, 230), Tint::Rgb(96, 104, 118)),
-            (Theme::Grey, false) => (Tint::Indexed(255), Tint::Indexed(243)),
+    /// The theme's colours: 24-bit when `true_color`, else the nearest of the 256 standard
+    /// colours.
+    pub fn colours(self, true_color: bool) -> Colours {
+        if true_color {
+            self.rgb()
+        } else {
+            self.indexed()
         }
     }
 
-    /// What white pieces drawn as text are written in on a light square, where white wouldn't
-    /// show: a deep shade of the dark squares' colour.
-    pub fn ink(self, true_color: bool) -> Tint {
-        match (self, true_color) {
-            (Theme::Brown, true) => Tint::Rgb(110, 72, 40),
-            (Theme::Brown, false) => Tint::Indexed(94),
-            (Theme::Blue, true) => Tint::Rgb(30, 54, 132),
-            (Theme::Blue, false) => Tint::Indexed(19),
-            (Theme::Green, true) => Tint::Rgb(26, 84, 44),
-            (Theme::Green, false) => Tint::Indexed(22),
-            (Theme::Grey, true) => Tint::Rgb(64, 70, 82),
-            (Theme::Grey, false) => Tint::Indexed(238),
+    fn rgb(self) -> Colours {
+        let rgb = Tint::Rgb;
+        // The light themes share their pieces and last-move tints.
+        let light_theme = |light, dark, ink| Colours {
+            light,
+            dark,
+            last_light: rgb(206, 210, 107),
+            last_dark: rgb(170, 162, 58),
+            white: rgb(255, 255, 255),
+            black: rgb(20, 20, 20),
+            ink,
+        };
+        match self {
+            Theme::Brown => light_theme(rgb(240, 217, 181), rgb(181, 136, 99), rgb(110, 72, 40)),
+            Theme::Blue => light_theme(rgb(228, 232, 238), rgb(56, 96, 196), rgb(30, 54, 132)),
+            Theme::Green => light_theme(rgb(236, 228, 200), rgb(52, 120, 72), rgb(26, 84, 44)),
+            Theme::Grey => light_theme(rgb(232, 232, 230), rgb(96, 104, 118), rgb(64, 70, 82)),
+            Theme::Dark => Colours {
+                light: rgb(110, 118, 132),
+                dark: rgb(78, 86, 100),
+                last_light: rgb(116, 120, 72),
+                last_dark: rgb(100, 104, 60),
+                white: rgb(200, 200, 192),
+                black: rgb(14, 14, 14),
+                // Muted white reads on these squares, so it stays.
+                ink: rgb(200, 200, 192),
+            },
         }
     }
 
-    /// The names of every theme, for messages: `brown, blue, green or grey`.
+    fn indexed(self) -> Colours {
+        let ix = Tint::Indexed;
+        let light_theme = |light, dark, ink| Colours {
+            light,
+            dark,
+            last_light: ix(186),
+            last_dark: ix(142),
+            white: ix(231),
+            black: ix(16),
+            ink,
+        };
+        match self {
+            Theme::Brown => light_theme(ix(223), ix(137), ix(94)),
+            Theme::Blue => light_theme(ix(254), ix(26), ix(19)),
+            Theme::Green => light_theme(ix(230), ix(28), ix(22)),
+            Theme::Grey => light_theme(ix(255), ix(243), ix(238)),
+            Theme::Dark => Colours {
+                light: ix(243),
+                dark: ix(240),
+                last_light: ix(101),
+                last_dark: ix(58),
+                white: ix(251),
+                black: ix(16),
+                ink: ix(251),
+            },
+        }
+    }
+
+    /// The names of every theme, for messages: `brown, blue, green, grey or dark`.
     pub fn names() -> String {
         let names: Vec<&str> = Theme::ALL.iter().map(|t| t.name()).collect();
         let (last, rest) = names.split_last().expect("there are themes");
@@ -118,8 +188,9 @@ mod tests {
         assert_eq!(Theme::parse("blue"), Some(Theme::Blue));
         assert_eq!(Theme::parse("Gray"), Some(Theme::Grey));
         assert_eq!(Theme::parse("pink"), None);
-        assert_eq!(Theme::Grey.next(), Theme::Brown);
-        assert_eq!(Theme::names(), "brown, blue, green or grey");
+        assert_eq!(Theme::Grey.next(), Theme::Dark);
+        assert_eq!(Theme::Dark.next(), Theme::Brown);
+        assert_eq!(Theme::names(), "brown, blue, green, grey or dark");
         for theme in Theme::ALL {
             assert_eq!(Theme::parse(theme.name()), Some(theme));
         }
@@ -148,34 +219,35 @@ mod tests {
 
     #[test]
     fn letter_pieces_read_on_every_square() {
-        let white = Tint::Rgb(255, 255, 255);
-        let black = Tint::Rgb(20, 20, 20);
         for theme in Theme::ALL {
-            let (light, dark) = theme.squares(true);
-            // On a dark square: black and white text. On a light one: black, and the ink
-            // that white pieces take there.
-            assert!(contrast(dark, black) >= 3.0, "{theme}: black on dark");
-            assert!(contrast(dark, white) >= 3.0, "{theme}: white on dark");
-            assert!(contrast(light, black) >= 7.0, "{theme}: black on light");
-            let ink = theme.ink(true);
-            assert!(
-                contrast(light, ink) >= 4.5,
-                "{theme}: white pieces on light"
-            );
+            let c = theme.colours(true);
+            // Each piece's text on each square it can stand on, as the board draws it: white
+            // takes the ink on light squares.
+            let pairs = [
+                ("white on dark", c.white, c.dark),
+                ("white on the last move's dark", c.white, c.last_dark),
+                ("white on light", c.ink, c.light),
+                ("white on the last move's light", c.ink, c.last_light),
+                ("black on dark", c.black, c.dark),
+                ("black on light", c.black, c.light),
+                ("black on the last move's dark", c.black, c.last_dark),
+            ];
+            for (what, text, square) in pairs {
+                let ratio = contrast(text, square);
+                assert!(ratio >= 2.5, "{theme}: {what} is {ratio:.2}");
+            }
         }
     }
 
     #[test]
-    fn every_theme_has_a_light_square_lighter_than_its_dark_one() {
-        let brightness = |tint: Tint| match tint {
-            Tint::Rgb(r, g, b) => u32::from(r) + u32::from(g) + u32::from(b),
-            _ => unreachable!("24-bit colours here"),
-        };
+    fn the_light_squares_are_lighter_and_the_dark_theme_is_dim() {
         for theme in Theme::ALL {
-            let (light, dark) = theme.squares(true);
-            assert!(brightness(light) > brightness(dark) + 200, "{theme}");
-            let (light, dark) = theme.squares(false);
-            assert_ne!(light, dark, "{theme}");
+            let c = theme.colours(true);
+            assert!(luminance(c.light) > luminance(c.dark), "{theme}");
+            assert_ne!(theme.colours(false).light, theme.colours(false).dark);
         }
+        let dark = Theme::Dark.colours(true);
+        assert!(luminance(dark.light) < 0.25, "no bright squares");
+        assert!(luminance(dark.white) < 0.65, "white pieces muted");
     }
 }

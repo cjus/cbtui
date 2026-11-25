@@ -2931,7 +2931,7 @@ mod tests {
         type_line(&mut app, &mut engine, ":theme pink");
         assert_eq!(app.settings.theme, Theme::Grey);
         assert!(
-            app.status.contains("brown, blue, green or grey"),
+            app.status.contains("brown, blue, green, grey or dark"),
             "{}",
             app.status
         );

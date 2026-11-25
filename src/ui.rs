@@ -300,38 +300,36 @@ impl Palette {
     /// The palette for `theme`: 24-bit colours when `true_color`, else the nearest of the 256
     /// standard colours.
     pub fn new(theme: Theme, true_color: bool) -> Palette {
-        let (light, dark) = theme.squares(true_color);
-        let ink = theme.ink(true_color);
-        if true_color {
-            Palette {
-                light,
-                dark,
-                last_light: Tint::Rgb(206, 210, 107),
-                last_dark: Tint::Rgb(170, 162, 58),
-                selected: Tint::Rgb(120, 160, 110),
-                check: Tint::Rgb(220, 70, 60),
-                cursor: Tint::Rgb(110, 160, 210),
-                capture: Tint::Rgb(214, 120, 96),
-                white_piece: Tint::Rgb(255, 255, 255),
-                black_piece: Tint::Rgb(20, 20, 20),
-                ink,
-                picker: Tint::Rgb(125, 135, 160),
+        let c = theme.colours(true_color);
+        let shared = |rgb: (u8, u8, u8), index: u8| {
+            if true_color {
+                Tint::Rgb(rgb.0, rgb.1, rgb.2)
+            } else {
+                Tint::Indexed(index)
             }
-        } else {
-            Palette {
-                light,
-                dark,
-                last_light: Tint::Indexed(186),
-                last_dark: Tint::Indexed(142),
-                selected: Tint::Indexed(108),
-                check: Tint::Indexed(167),
-                cursor: Tint::Indexed(74),
-                capture: Tint::Indexed(173),
-                white_piece: Tint::Indexed(231),
-                black_piece: Tint::Indexed(16),
-                ink,
-                picker: Tint::Indexed(103),
-            }
+        };
+        Palette {
+            light: c.light,
+            dark: c.dark,
+            last_light: c.last_light,
+            last_dark: c.last_dark,
+            selected: shared((120, 160, 110), 108),
+            check: shared((220, 70, 60), 167),
+            cursor: shared((110, 160, 210), 74),
+            capture: shared((214, 120, 96), 173),
+            white_piece: c.white,
+            black_piece: c.black,
+            ink: c.ink,
+            picker: shared((125, 135, 160), 103),
+        }
+    }
+
+    /// What picture pieces' colours are multiplied by: the theme's white, so a dark theme's
+    /// pictures are muted like its letters. Plain white (no change) without 24-bit colour.
+    pub fn picture_tint(&self) -> [u8; 3] {
+        match self.white_piece {
+            Tint::Rgb(r, g, b) => [r, g, b],
+            _ => [u8::MAX; 3],
         }
     }
 }
@@ -643,7 +641,12 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
                 // a terminal that shows pictures has 24-bit colour, so the palette is RGB).
                 if let Pieces::Images(art) = pieces
                     && let Tint::Rgb(r, g_, b) = bg
-                    && let Some(picture) = art.picture(piece, [r, g_, b], (g.width, g.height))
+                    && let Some(picture) = art.picture(
+                        piece,
+                        [r, g_, b],
+                        palette.picture_tint(),
+                        (g.width, g.height),
+                    )
                 {
                     Image::new(picture).render(rect, buf);
                     continue;
@@ -1697,16 +1700,15 @@ mod tests {
                     .map(|at| buffer[at].clone())
                     .unwrap()
             };
-            let (light, dark) = theme.squares(true);
-            // a1 is dark: a white rook in white. b1 is light: a white knight in the ink.
+            let c = theme.colours(true);
+            // a1 is dark: a white rook in the theme's white. b1 is light: a white knight in
+            // the ink. e8 is light: the black king in black.
             let rook = cell("WR");
-            assert_eq!(
-                (rook.bg, rook.fg),
-                (dark, Tint::Rgb(255, 255, 255)),
-                "{theme}"
-            );
+            assert_eq!((rook.bg, rook.fg), (c.dark, c.white), "{theme}");
             let knight = cell("WN");
-            assert_eq!((knight.bg, knight.fg), (light, theme.ink(true)), "{theme}");
+            assert_eq!((knight.bg, knight.fg), (c.light, c.ink), "{theme}");
+            let king = cell("BK");
+            assert_eq!((king.bg, king.fg), (c.light, c.black), "{theme}");
         }
     }
 

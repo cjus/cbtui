@@ -82,10 +82,16 @@ changes the picture.
   are mid tones, white pieces on light squares take a deep shade of the theme, and the move
   dots take the other square's colour. Tests check the contrast. Tried in tmux in 24-bit
   colour (2026-11-25); picture pieces not tried yet.
+- **Dark theme: built** (seventeenth PR). `--theme dark` or `:theme dark`: dim slate squares,
+  white pieces muted to a soft grey, black pieces still black, and a dull olive last move.
+  Picture pieces are muted too: each is drawn on a clear layer, its colours multiplied by the
+  theme's white, then laid over the square. Each theme now sets its pieces' and last move's
+  colours as well as its squares'. Tried in tmux in 24-bit colour (2026-11-25); pictures
+  not tried yet.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 113 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 114 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
