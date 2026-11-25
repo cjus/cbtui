@@ -47,6 +47,22 @@ use crate::rules::{self, Color, Square};
 /// The width the panels on the right need, at least.
 const SIDE_MIN_WIDTH: u16 = 32;
 
+/// The engine-and-players panel's height, frame included: the players, the time and level,
+/// and whose move it is (two lines for a long game ending).
+const INFO_PANEL_ROWS: u16 = 6;
+
+/// The engine panel's height, frame included, when there is room: its report and a long line.
+const ENGINE_PANEL_MAX_ROWS: u16 = 10;
+
+/// The engine panel's height, frame included, when the terminal is short.
+const ENGINE_PANEL_MIN_ROWS: u16 = 5;
+
+/// The move list's height, frame included, that the engine panel leaves it if it can.
+const MOVES_PANEL_MIN_ROWS: u16 = 5;
+
+/// How many characters of a commit hash an engine's version shows ([`short_version`]).
+const SHORT_HASH_LEN: usize = 7;
+
 /// The smallest terminal cbtui draws in.
 pub const MIN_WIDTH: u16 = 8 * 3 + 5 + SIDE_MIN_WIDTH;
 /// The smallest terminal cbtui draws in.
@@ -147,10 +163,15 @@ pub fn layout(area: Rect, aspect: Option<f32>, zoomed: bool) -> Panels {
     let board_width = 8 * w + BOARD_MARGIN_COLUMNS + 2;
     let [board, side] =
         Layout::horizontal([Constraint::Length(board_width), Constraint::Min(0)]).areas(main);
+    // The engine panel grows up to its most, leaving the move list some rows.
+    let engine_rows = side
+        .height
+        .saturating_sub(INFO_PANEL_ROWS + MOVES_PANEL_MIN_ROWS)
+        .clamp(ENGINE_PANEL_MIN_ROWS, ENGINE_PANEL_MAX_ROWS);
     let [info, moves, engine] = Layout::vertical([
-        Constraint::Length(6),
-        Constraint::Min(3),
-        Constraint::Length(5),
+        Constraint::Length(INFO_PANEL_ROWS),
+        Constraint::Min(0),
+        Constraint::Length(engine_rows),
     ])
     .areas(side);
     Panels {
@@ -306,7 +327,7 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
         );
     }
     if app.show_help {
-        draw_help(frame, area);
+        draw_help(frame, area, app);
     }
 }
 
@@ -389,7 +410,7 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
 }
 
 fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
-    let title = format!(" {} {} ", app.node.name, app.node.version);
+    let title = format!(" {} {} ", app.node.name, short_version(&app.node.version));
     let player = |color: Color| {
         if app.settings.engine_plays[color.index()] {
             app.node.name.clone()
@@ -426,16 +447,28 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
         )),
         Line::from(strength),
         Line::from(Span::styled(
-            format!("Licence: {}", app.node.license),
-            Style::default().add_modifier(Modifier::DIM),
-        )),
-        Line::from(Span::styled(
             state,
             Style::default().add_modifier(Modifier::BOLD),
         )),
     ];
     let block = Block::default().borders(Borders::ALL).title(title);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+/// A version with a long commit hash in its build metadata cut to [`SHORT_HASH_LEN`]
+/// characters: `1.0.0+f41bbcc85c7a` is `1.0.0+f41bbcc`. Any other version is left as it is.
+fn short_version(version: &str) -> String {
+    match version.split_once('+') {
+        Some((release, build))
+            if build.len() > SHORT_HASH_LEN && build.chars().all(|c| c.is_ascii_hexdigit()) =>
+        {
+            format!("{release}+{}", &build[..SHORT_HASH_LEN])
+        }
+        _ => version.to_string(),
+    }
 }
 
 fn draw_moves(frame: &mut Frame, area: Rect, app: &App) {
@@ -567,9 +600,15 @@ Commands
 
 Press any key to close.";
 
-fn draw_help(frame: &mut Frame, area: Rect) {
+/// The help screen: which engine it is (its whole version, and its licence), then [`HELP`].
+fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
+    let engine = format!(
+        "Engine\n  {} {}, licence {}\n\n",
+        app.node.name, app.node.version, app.node.license
+    );
+    let text = engine + HELP;
     let width = 70.min(area.width);
-    let height = (HELP.lines().count() as u16 + 2).min(area.height);
+    let height = (text.lines().count() as u16 + 2).min(area.height);
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -578,7 +617,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     );
     frame.render_widget(Clear, rect);
     let block = Block::default().borders(Borders::ALL).title(" Help ");
-    frame.render_widget(Paragraph::new(HELP).block(block), rect);
+    frame.render_widget(Paragraph::new(text).block(block), rect);
 }
 
 #[cfg(test)]
@@ -622,7 +661,10 @@ mod tests {
     fn draws_the_board_the_engine_and_the_moves() {
         let text = screen(&app(), 100, 32);
         assert!(text.contains("eng 1.2"), "{text}");
-        assert!(text.contains("Licence: MIT"), "{text}");
+        assert!(
+            !text.contains("MIT"),
+            "the licence is on the help screen: {text}"
+        );
         assert!(text.contains("White: you   Black: eng"), "{text}");
         assert!(text.contains("WK") && text.contains("BP"), "{text}");
         assert!(text.contains("White to move"), "{text}");
@@ -741,6 +783,38 @@ mod tests {
             let right = 100 - (zoomed.x + 8 * zoomed.width);
             assert!((zoomed.x - 2).abs_diff(right) <= 1, "{zoomed:?}");
         }
+    }
+
+    #[test]
+    fn the_help_says_the_engine_s_whole_version_and_licence() {
+        let mut app = app();
+        app.node.version = "1.0.0+f41bbcc85c7a".into();
+        let text = screen(&app, 100, 40);
+        assert!(text.contains("eng 1.0.0+f41bbcc "), "{text}");
+        assert!(!text.contains("f41bbcc85c7a"), "{text}");
+        app.show_help = true;
+        let text = screen(&app, 100, 40);
+        assert!(
+            text.contains("eng 1.0.0+f41bbcc85c7a, licence MIT"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn versions_keep_a_short_hash() {
+        assert_eq!(short_version("1.0.0+f41bbcc85c7a"), "1.0.0+f41bbcc");
+        assert_eq!(short_version("1.0.0+f41bbcc"), "1.0.0+f41bbcc");
+        assert_eq!(short_version("1.0.0+build.5"), "1.0.0+build.5");
+        assert_eq!(short_version("2.1"), "2.1");
+    }
+
+    #[test]
+    fn the_engine_panel_grows_but_leaves_the_move_list_room() {
+        let panels = |h| layout(Rect::new(0, 0, 100, h), None, false);
+        assert_eq!(panels(50).engine.height, ENGINE_PANEL_MAX_ROWS);
+        let short = panels(20);
+        assert!(short.engine.height >= ENGINE_PANEL_MIN_ROWS, "{short:?}");
+        assert!(short.moves.height >= MOVES_PANEL_MIN_ROWS, "{short:?}");
     }
 
     #[test]

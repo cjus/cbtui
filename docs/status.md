@@ -17,10 +17,14 @@ changes the picture.
   status line, which then ends with the last move, whose move it is and the engine's score.
   Letter pieces now grow past 7×3, up to 13×6, in either mode. A wide terminal is held back
   by its height, so zoom gains most in narrow or tall ones. Tried in tmux (2026-11-24).
+- **Engine panels: tidied** (fifth PR). The engine's title shows its version with a short
+  commit hash (`1.0.0+f41bbcc`); the whole version and the licence moved to the help screen
+  (`?`). The engine panel grows to 10 rows where there is room (from 5), and a long game
+  ending wraps instead of being cut off.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 42 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 45 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).

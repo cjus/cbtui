@@ -21,7 +21,8 @@ cargo install --locked --git https://github.com/cjus/chessengine cb2026
 
 # cb2026's default build includes Syzygy tablebase probing, which makes that binary
 # GPL-3.0-or-later; add --no-default-features for an MIT OR Apache-2.0 engine without it.
-# cbtui shows whichever licence the engine reports. cbtui itself links no GPL code.
+# cbtui shows whichever licence the engine reports (press ? in cbtui). cbtui itself
+# links no GPL code.
 
 # cbtui itself.
 cargo install --locked --git https://github.com/cjus/cbtui
@@ -98,23 +99,23 @@ pawn. They are white or black too, so they read with or without colour. Here is 
 terminal:
 
 ```text
-┌ Board ────────────────────┐┌ cb2026 1.0.0+f41bbcc85c7a ──────────────────┐
+┌ Board ────────────────────┐┌ cb2026 1.0.0+f41bbcc ───────────────────────┐
 │                           ││White: you   Black: cb2026                   │
 │                           ││800 ms a move                                │
-│                           ││Licence: GPL-3.0-or-later                    │
-│8 BR BN BB BQ BK BB BN BR  ││White to move                                │
+│                           ││White to move                                │
+│8 BR BN BB BQ BK BB BN BR  ││                                             │
 │7 BP BP          BP BP BP  │└─────────────────────────────────────────────┘
 │6       BP    BP           │┌ Moves ──────────────────────────────────────┐
 │5    WB    BP              ││  1. e4       e6                             │
 │4             WP           ││  2. Nf3      d5                             │
 │3                WN        ││  3. Bb5+     c6                             │
-│2 WP WP WP WP    WP WP WP  ││                                             │
-│1 WR WN WB WQ WK       WR  ││                                             │
-│   a  b  c  d  e  f  g  h  │└─────────────────────────────────────────────┘
-│                           │┌ Engine ─────────────────────────────────────┐
-│                           ││depth 16/27  -0.06  1.1M nodes  1.4M/s  0.8s │
-│                           ││c6 Bd3 Nf6 e5 Nfd7 Be2 c5 c3 Be7 d4 Nc6 O-O  │
-│                           ││Qb6 h3 O-O dxc5 Bxc5 b4                      │
+│2 WP WP WP WP    WP WP WP  │└─────────────────────────────────────────────┘
+│1 WR WN WB WQ WK       WR  │┌ Engine ─────────────────────────────────────┐
+│   a  b  c  d  e  f  g  h  ││depth 19/30  -0.18  1.1M nodes  1.4M/s  0.8s │
+│                           ││c6 Bd3 dxe4 Bxe4 Nf6 Nc3 c5 O-O Nxe4 Nxe4 Nc6│
+│                           ││b3 Be7 Bb2 O-O d3 b6 Qd2 Nd4 Nxd4 cxd4       │
+│                           ││                                             │
+│                           ││                                             │
 └───────────────────────────┘└─────────────────────────────────────────────┘
 cb2026 played c6.
 ```
