@@ -25,6 +25,8 @@ Options:
   --level <n>            The engine's playing level, if it has levels (default: full strength)
   --movetime <ms>        How long the engine thinks a move (default: 1000)
   --fen <FEN>            Start from this position
+  --pgn <file>           View the first game in a PGN file: the arrows step through it,
+                         variations included. Works without an engine
   --pieces <style>       auto (default): pictures if the terminal can show them (not
                          inside tmux), else letters; letters: WK, BP; symbols: chess
                          symbols. --ascii is the same as --pieces letters
@@ -44,6 +46,8 @@ pub enum Args {
         settings: Settings,
         /// How to draw the pieces.
         pieces: PieceChoice,
+        /// A PGN file to view, if any.
+        pgn: Option<String>,
     },
     /// Print the help.
     Help,
@@ -60,6 +64,7 @@ pub fn parse(
     let mut engine_args: Vec<String> = Vec::new();
     let mut settings = Settings::default();
     let mut pieces = PieceChoice::Auto;
+    let mut pgn = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -101,6 +106,7 @@ pub fn parse(
                     })?;
             }
             "--fen" => settings.fen = Some(value("--fen")?),
+            "--pgn" => pgn = Some(value("--pgn")?),
             // The old name for letters, kept so it still works.
             "--ascii" => pieces = PieceChoice::Letters,
             "--pieces" => {
@@ -118,6 +124,9 @@ pub fn parse(
             other => return Err(format!("unknown option `{other}` (try --help)")),
         }
     }
+    if pgn.is_some() && settings.fen.is_some() {
+        return Err("--pgn and --fen both say where to start: give one".into());
+    }
     if engine_args.is_empty() {
         engine_args = DEFAULT_ENGINE_ARGS.iter().map(|s| s.to_string()).collect();
     }
@@ -126,6 +135,7 @@ pub fn parse(
         engine_args,
         settings,
         pieces,
+        pgn,
     })
 }
 
@@ -202,6 +212,22 @@ mod tests {
             run(&["--pieces", "emoji"], None)
                 .unwrap_err()
                 .contains("emoji")
+        );
+    }
+
+    #[test]
+    fn reads_a_pgn_file_to_view() {
+        let Args::Run { pgn, .. } = run(&["--pgn", "game.pgn"], None).unwrap() else {
+            panic!()
+        };
+        assert_eq!(pgn.as_deref(), Some("game.pgn"));
+        assert!(
+            run(
+                &["--pgn", "game.pgn", "--fen", "8/8/8/8/8/8/8/K6k w - - 0 1"],
+                None
+            )
+            .unwrap_err()
+            .contains("give one")
         );
     }
 

@@ -253,6 +253,21 @@ impl Engine for Node {
     }
 }
 
+/// The engine when there is none, as for a PGN viewer started without one: a search fails,
+/// saying so, and a stop has nothing to stop.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoEngine;
+
+impl Engine for NoEngine {
+    fn search(&mut self, _params: &SearchParams) -> Result<i64, String> {
+        Err("No engine is connected.".into())
+    }
+
+    fn stop(&mut self, _id: i64) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

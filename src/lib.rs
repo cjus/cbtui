@@ -11,6 +11,7 @@
 //! - [`node`]: the engine process and the CNP conversation with it;
 //! - [`rules`]: legality, notation and game endings, from a rules library;
 //! - [`app`]: the state of a session, and what input and engine messages do to it;
+//! - [`review`]: a game read from PGN, with its variations, to step through;
 //! - [`ui`]: drawing it with [Ratatui](https://ratatui.rs);
 //! - [`pieces`]: pieces as pictures where the terminal can show them, else as letters;
 //! - [`args`]: the command line.
@@ -22,5 +23,6 @@ pub mod app;
 pub mod args;
 pub mod node;
 pub mod pieces;
+pub mod review;
 pub mod rules;
 pub mod ui;

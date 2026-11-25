@@ -25,6 +25,11 @@
 //! are a cell each whatever the square, squares come in fixed sizes, from 13×6 cells down to
 //! 3×1, the largest that fits.
 //!
+//! As a PGN viewer ([`App::review`]) the panels on the right show the recorded game: its
+//! players and event, its moves with the variations in brackets (the shown move highlighted,
+//! the list scrolled to it), and the shown move's comments and the variations that start
+//! there. Looking back in a game (`[`), the move list highlights the move shown.
+//!
 //! Pitfall: a board is usually limited by the terminal's height, not its width, so zooming a
 //! wide terminal gains only the rows the frame and keys line took. It gains most in narrow or
 //! tall ones, where the side panels' width was what held the board back.
@@ -42,7 +47,8 @@ use ratatui_image::Image;
 
 use crate::app::{App, score_text};
 use crate::pieces::{self, Pieces};
-use crate::rules::{self, Color, Square};
+use crate::review::Review;
+use crate::rules::{self, Color, Position, Square};
 
 /// The width the panels on the right need, at least.
 const SIDE_MIN_WIDTH: u16 = 32;
@@ -50,6 +56,10 @@ const SIDE_MIN_WIDTH: u16 = 32;
 /// The engine-and-players panel's height, frame included: the players, the time and level,
 /// and whose move it is (two lines for a long game ending).
 const INFO_PANEL_ROWS: u16 = 6;
+
+/// The PGN viewer's top panel's height, frame included: White, Black, the event, and where the
+/// board is in the game (two lines in a variation).
+const REVIEW_INFO_PANEL_ROWS: u16 = 7;
 
 /// The engine panel's height, frame included, when there is room: its report and a long line.
 const ENGINE_PANEL_MAX_ROWS: u16 = 10;
@@ -163,17 +173,7 @@ pub fn layout(area: Rect, aspect: Option<f32>, zoomed: bool) -> Panels {
     let board_width = 8 * w + BOARD_MARGIN_COLUMNS + 2;
     let [board, side] =
         Layout::horizontal([Constraint::Length(board_width), Constraint::Min(0)]).areas(main);
-    // The engine panel grows up to its most, leaving the move list some rows.
-    let engine_rows = side
-        .height
-        .saturating_sub(INFO_PANEL_ROWS + MOVES_PANEL_MIN_ROWS)
-        .clamp(ENGINE_PANEL_MIN_ROWS, ENGINE_PANEL_MAX_ROWS);
-    let [info, moves, engine] = Layout::vertical([
-        Constraint::Length(INFO_PANEL_ROWS),
-        Constraint::Min(0),
-        Constraint::Length(engine_rows),
-    ])
-    .areas(side);
+    let [info, moves, engine] = split_side(side, INFO_PANEL_ROWS);
     Panels {
         board,
         squares: Block::default().borders(Borders::ALL).inner(board),
@@ -183,6 +183,21 @@ pub fn layout(area: Rect, aspect: Option<f32>, zoomed: bool) -> Panels {
         status,
         keys,
     }
+}
+
+/// The panels on the right, top to bottom, with `info_rows` for the top one. The bottom one
+/// grows up to its most, leaving the move list some rows.
+fn split_side(side: Rect, info_rows: u16) -> [Rect; 3] {
+    let bottom_rows = side
+        .height
+        .saturating_sub(info_rows + MOVES_PANEL_MIN_ROWS)
+        .clamp(ENGINE_PANEL_MIN_ROWS, ENGINE_PANEL_MAX_ROWS);
+    Layout::vertical([
+        Constraint::Length(info_rows),
+        Constraint::Min(0),
+        Constraint::Length(bottom_rows),
+    ])
+    .areas(side)
 }
 
 /// Where the squares are in `squares` ([`Panels::squares`]). `aspect` is a cell's height
@@ -316,11 +331,23 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
     } else {
         let block = Block::default().borders(Borders::ALL).title(" Board ");
         frame.render_widget(block, panels.board);
-        draw_info(frame, panels.info, app);
-        draw_moves(frame, panels.moves, app);
-        draw_engine(frame, panels.engine, app);
+        let keys = match &app.review {
+            Some(review) => {
+                let side = panels.info.union(panels.moves).union(panels.engine);
+                let [info, moves, notes] = split_side(side, REVIEW_INFO_PANEL_ROWS);
+                draw_review_info(frame, info, review);
+                draw_review_moves(frame, moves, review);
+                draw_notes(frame, notes, review);
+                "← → step · ↑ ↓ start/end · 1-9 variation · :play <side> play on · t flip · z zoom · ? help · q quit"
+            }
+            None => {
+                draw_info(frame, panels.info, app);
+                draw_moves(frame, panels.moves, app);
+                draw_engine(frame, panels.engine, app);
+                "click or arrows: move · type a move · m engine moves · u undo · n new · [ ] look back · t flip · z zoom · : command · ? help · q quit"
+            }
+        };
         draw_status(frame, panels.status, app);
-        let keys = "click or arrows: move · type a move · m engine moves · u undo · n new · t flip · z zoom · : command · ? help · q quit";
         frame.render_widget(
             Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
             panels.keys,
@@ -333,8 +360,9 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
 
 fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pieces: &mut Pieces) {
     let g = board_geometry(squares, pieces.cell_aspect());
-    let position = app.game.position();
-    let last = app.game.last_move().map(|played| played.mv);
+    let shown = app.shown_position();
+    let position = &shown;
+    let last = app.shown_last_move();
     let targets = app.targets();
     let check_square = position
         .in_check()
@@ -410,7 +438,10 @@ fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pie
 }
 
 fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
-    let title = format!(" {} {} ", app.node.name, short_version(&app.node.version));
+    let title = match short_version(&app.node.version) {
+        version if version.is_empty() => format!(" {} ", app.node.name),
+        version => format!(" {} {version} ", app.node.name),
+    };
     let player = |color: Color| {
         if app.settings.engine_plays[color.index()] {
             app.node.name.clone()
@@ -475,20 +506,194 @@ fn draw_moves(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Moves ");
     let rows = app.game.numbered_moves();
     let visible = area.height.saturating_sub(2) as usize;
-    let skip = rows.len().saturating_sub(visible);
+    // Looking back: the row and column (0 White, 1 Black) of the move shown.
+    let offset = usize::from(app.game.start().side_to_move() == Color::Black);
+    let shown = app
+        .browse
+        .and_then(|ply| ply.checked_sub(1))
+        .map(|i| ((i + offset) / 2, (i + offset) % 2));
+    let mut skip = rows.len().saturating_sub(visible);
+    if let Some((row, _)) = shown {
+        skip = skip.min(row);
+    }
     let lines: Vec<Line> = rows
         .iter()
+        .enumerate()
         .skip(skip)
-        .map(|(number, white, black)| {
-            Line::from(format!(
-                "{:>3}. {:<8} {}",
-                number,
-                white.unwrap_or("…"),
-                black.unwrap_or("")
-            ))
+        .map(|(row, (number, white, black))| {
+            let style = |column| {
+                if shown == Some((row, column)) {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                }
+            };
+            Line::from(vec![
+                Span::raw(format!("{number:>3}. ")),
+                Span::styled(format!("{:<8}", white.unwrap_or("…")), style(0)),
+                Span::raw(" "),
+                Span::styled(black.unwrap_or("").to_string(), style(1)),
+            ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The PGN viewer's top panel: the players (with ratings), the event and result, and where
+/// the board is in the game (two lines, if it needs them).
+fn draw_review_info(frame: &mut Frame, area: Rect, review: &Review) {
+    let player = |color: &str| {
+        let name = review.tag(color).unwrap_or("?");
+        match review.tag(&format!("{color}Elo")) {
+            Some(elo) => format!("{name} ({elo})"),
+            None => name.to_string(),
+        }
+    };
+    // A date's unknown parts go: `1858.??.??` is `1858`.
+    let date = review
+        .tag("Date")
+        .map(|date| date.trim_end_matches(['?', '.']));
+    let mut event: Vec<&str> = [review.tag("Event"), review.tag("Site"), date]
+        .into_iter()
+        .flatten()
+        .collect();
+    event.push(&review.result);
+    // The players and event are a line each, cut at the edge if long, so the state below
+    // always has its two lines.
+    let header = vec![
+        Line::from(format!("White: {}", player("White"))),
+        Line::from(format!("Black: {}", player("Black"))),
+        Line::from(event.join(" · ")),
+    ];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", review.name));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [top, bottom] =
+        Layout::vertical([Constraint::Length(header.len() as u16), Constraint::Min(0)])
+            .areas(inner);
+    frame.render_widget(Paragraph::new(header), top);
+    let state = Span::styled(
+        review_state(review),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(state)).wrap(Wrap { trim: true }),
+        bottom,
+    );
+}
+
+/// Where the viewer is: `After 12… Nf6 · White to move`, with `in a variation` off the main
+/// line, and checkmate or stalemate when the position is one.
+fn review_state(review: &Review) -> String {
+    let node = review.current();
+    let mut parts = vec![match review.cursor() {
+        0 => "Start".to_string(),
+        id => format!("After {}", review.label(id, true)),
+    }];
+    parts.push(side_or_ending(&node.position));
+    if review.main_line_place().is_none() {
+        parts.push("in a variation".into());
+    }
+    parts.join(" · ")
+}
+
+/// `White to move` (`, in check`), or `Checkmate` or `Stalemate` when there are no moves.
+fn side_or_ending(position: &Position) -> String {
+    let side = position.side_to_move();
+    match (position.legal_moves().is_empty(), position.in_check()) {
+        (true, true) => format!("Checkmate: {} wins", !side),
+        (true, false) => "Stalemate".into(),
+        (false, true) => format!("{side} to move, in check"),
+        (false, false) => format!("{side} to move"),
+    }
+}
+
+/// The PGN viewer's move list: the moves as PGN writes them, variations in brackets and
+/// dimmed, wrapped to the panel, the shown move highlighted and kept in view.
+fn draw_review_moves(frame: &mut Frame, area: Rect, review: &Review) {
+    let block = Block::default().borders(Borders::ALL).title(" Moves ");
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Vec<Span>> = vec![Vec::new()];
+    let (mut used, mut current_line) = (0, 0);
+    for token in review.tokens() {
+        let (open, close) = ("(".repeat(token.open), ")".repeat(token.close));
+        let length = open.chars().count() + token.text.chars().count() + close.chars().count();
+        if used > 0 && used + 1 + length > width {
+            lines.push(Vec::new());
+            used = 0;
+        }
+        let line = lines.last_mut().expect("never empty");
+        if used > 0 {
+            line.push(Span::raw(" "));
+            used += 1;
+        }
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let style = if token.node == review.cursor() {
+            current_line = lines.len() - 1;
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else if token.depth > 0 {
+            dim
+        } else {
+            Style::default()
+        };
+        let line = lines.last_mut().expect("never empty");
+        line.push(Span::styled(open, dim));
+        line.push(Span::styled(token.text, style));
+        line.push(Span::styled(close, dim));
+        used += length;
+    }
+    let visible = area.height.saturating_sub(2) as usize;
+    let skip = current_line
+        .saturating_sub(visible / 2)
+        .min(lines.len().saturating_sub(visible));
+    let lines: Vec<Line> = lines.into_iter().skip(skip).map(Line::from).collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The PGN viewer's bottom panel: the shown move's comments, and the variations that start
+/// here, numbered for the keys that enter them.
+fn draw_notes(frame: &mut Frame, area: Rect, review: &Review) {
+    let node = review.current();
+    let mut lines: Vec<Line> = [&node.before, &node.comment]
+        .into_iter()
+        .flatten()
+        .map(|comment| rules::comment_text(comment))
+        .filter(|text| !text.is_empty())
+        .map(Line::from)
+        .collect();
+    let alternatives = review.alternatives();
+    if !alternatives.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        let main = node.children[0];
+        lines.push(Line::from(format!(
+            "Next: {} · or press",
+            review.label(main, true)
+        )));
+        for (i, &id) in alternatives.iter().enumerate().take(9) {
+            lines.push(Line::from(format!(
+                "  {}  {}",
+                i + 1,
+                review.label(id, true)
+            )));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No comment here.",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    let block = Block::default().borders(Borders::ALL).title(" Notes ");
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 /// A count with a suffix: `950`, `12.3k`, `4.5M`.
@@ -540,23 +745,25 @@ fn draw_engine(frame: &mut Frame, area: Rect, app: &App) {
 /// move it is (or how the game ended), and the engine's latest score and depth.
 fn zoom_summary(app: &App) -> String {
     let mut parts = Vec::new();
-    if let Some((number, white, black)) = app.game.numbered_moves().last() {
-        parts.push(match (white, black) {
-            (_, Some(black)) => format!("{number}… {black}"),
-            (Some(white), None) => format!("{number}. {white}"),
-            (None, None) => String::new(),
+    parts.extend(app.shown_move_label());
+    if let Some(review) = &app.review {
+        parts.push(side_or_ending(&review.current().position));
+        if review.main_line_place().is_none() {
+            parts.push("in a variation".into());
+        }
+    } else if app.browse.is_some() {
+        parts.push("looking back · ] to return".into());
+    } else {
+        parts.push(match app.game.outcome() {
+            Some(outcome) => rules::describe_outcome(outcome),
+            None if app.searching() => format!("{} is thinking…", app.node.name),
+            None => format!("{} to move", app.game.position().side_to_move()),
         });
-    }
-    parts.push(match app.game.outcome() {
-        Some(outcome) => rules::describe_outcome(outcome),
-        None if app.searching() => format!("{} is thinking…", app.node.name),
-        None => format!("{} to move", app.game.position().side_to_move()),
-    });
-    if let Some(t) = &app.thinking {
-        parts.push(format!("{} d{}", score_text(t.score), t.depth));
+        if let Some(t) = &app.thinking {
+            parts.push(format!("{} d{}", score_text(t.score), t.depth));
+        }
     }
     parts.push("z panels ".into());
-    parts.retain(|part| !part.is_empty());
     parts.join(" · ")
 }
 
@@ -584,11 +791,18 @@ Keys
   m        the engine moves (now, if it is thinking)
   u        take back your last move
   n        new game
+  [ ]      look back through the game a move at a time (Home, End)
   t        turn the board around
   z        zoom: the board fills the screen (again for the panels)
   :        type a command
   ?        this help
   q        quit
+
+PGN viewer (cbtui --pgn <file>)
+  ← →      a move back or on (also [ ])
+  ↑ ↓      the start of the game, the end of the line (also Home, End)
+  1-9      into a variation that starts at this move
+  :play white|black|both|none   play on from the position shown
 
 Commands
   :play white|black|both|none   which sides the engine plays
@@ -602,10 +816,14 @@ Press any key to close.";
 
 /// The help screen: which engine it is (its whole version, and its licence), then [`HELP`].
 fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
-    let engine = format!(
-        "Engine\n  {} {}, licence {}\n\n",
-        app.node.name, app.node.version, app.node.license
-    );
+    let engine = if app.has_engine {
+        format!(
+            "Engine\n  {} {}, licence {}\n\n",
+            app.node.name, app.node.version, app.node.license
+        )
+    } else {
+        "Engine\n  None: start cbtui with --engine <path> to play one.\n\n".to_string()
+    };
     let text = engine + HELP;
     let width = 70.min(area.width);
     let height = (text.lines().count() as u16 + 2).min(area.height);
@@ -815,6 +1033,114 @@ mod tests {
         let short = panels(20);
         assert!(short.engine.height >= ENGINE_PANEL_MIN_ROWS, "{short:?}");
         assert!(short.moves.height >= MOVES_PANEL_MIN_ROWS, "{short:?}");
+    }
+
+    fn viewer() -> App {
+        let pgn = "[Event \"Club match\"]\n[Date \"2026.11.24\"]\n[White \"Ann\"]\n\
+            [WhiteElo \"1900\"]\n[Black \"Bo\"]\n[Result \"1-0\"]\n\n\
+            1. e4 e5 2. Nf3 {The usual.} (2. f4 exf4) Nc6 $1 1-0";
+        let mut app = app();
+        app.open_review(Review::from_pgn(pgn, "club.pgn").unwrap());
+        app
+    }
+
+    #[test]
+    fn the_viewer_shows_the_tags_the_moves_and_the_notes() {
+        let mut app = viewer();
+        let text = screen(&app, 100, 32);
+        assert!(text.contains(" club.pgn "), "{text}");
+        assert!(text.contains("White: Ann (1900)"), "{text}");
+        assert!(text.contains("Black: Bo"), "{text}");
+        assert!(text.contains("Club match · 2026.11.24 · 1-0"), "{text}");
+        assert!(text.contains("Start · White to move"), "{text}");
+        assert!(
+            text.contains("1. e4 e5 2. Nf3 (2. f4 exf4) 2… Nc6!"),
+            "{text}"
+        );
+        assert!(text.contains("← → step"), "{text}");
+        for _ in 0..2 {
+            app.review.as_mut().unwrap().forward();
+        }
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("After 1… e5 · White to move"), "{text}");
+        assert!(text.contains("Next: 2. Nf3 · or press"), "{text}");
+        assert!(text.contains("1  2. f4"), "{text}");
+        app.review.as_mut().unwrap().forward();
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("The usual."), "{text}");
+        app.review.as_mut().unwrap().back();
+        app.review.as_mut().unwrap().enter(1);
+        let text = screen(&app, 100, 32);
+        // The state wraps onto the panel's last line.
+        assert!(
+            text.contains("After 2. f4 · Black to move · in a"),
+            "{text}"
+        );
+        assert!(text.contains("│variation"), "{text}");
+    }
+
+    #[test]
+    fn the_viewer_s_move_list_keeps_the_shown_move_in_view() {
+        // A long game in a short terminal: the shown move is on screen wherever it is.
+        let moves: Vec<String> = (0..60)
+            .map(|i| match i % 4 {
+                0 => "Nf3",
+                1 => "Nf6",
+                2 => "Ng1",
+                _ => "Ng8",
+            })
+            .enumerate()
+            .map(|(i, m)| {
+                if i % 2 == 0 {
+                    format!("{}. {m}", i / 2 + 1)
+                } else {
+                    m.into()
+                }
+            })
+            .collect();
+        let mut app = app();
+        app.open_review(Review::from_pgn(&moves.join(" "), "long.pgn").unwrap());
+        app.review.as_mut().unwrap().to_end();
+        let text = screen(&app, MIN_WIDTH + 10, 24);
+        assert!(text.contains("30… Ng8"), "{text}");
+    }
+
+    #[test]
+    fn looking_back_highlights_the_move_in_the_list() {
+        let mut app = app();
+        let mut engine = crate::node::NoEngine;
+        app.settings.engine_plays = [false, false];
+        for c in ["e4", "e5"] {
+            app.input = Some(c.into());
+            app.handle_key(
+                ratatui::crossterm::event::KeyEvent::from(
+                    ratatui::crossterm::event::KeyCode::Enter,
+                ),
+                &mut engine,
+            );
+        }
+        app.browse = Some(1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| draw(frame, &app, &Palette::TRUE_COLOR, &mut Pieces::Letters))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Find "e4" in the move list: it is the highlighted one.
+        let (x, y) = (0..32)
+            .flat_map(|y| (0..99).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                buffer[(x, y)].symbol() == "e"
+                    && buffer[(x + 1, y)].symbol() == "4"
+                    && buffer[(x - 1, y)].symbol() == " "
+                    && buffer[(x - 2, y)].symbol() == "."
+            })
+            .expect("e4 in the move list");
+        assert!(buffer[(x, y)].modifier.contains(Modifier::REVERSED));
+        let zoomed = {
+            app.zoomed = true;
+            screen(&app, 100, 32)
+        };
+        assert!(zoomed.contains("1. e4 · looking back"), "{zoomed}");
     }
 
     #[test]

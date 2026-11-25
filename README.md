@@ -46,10 +46,27 @@ Click a piece and then its square, or use the arrow keys and Enter, or type a mo
 | `m` | the engine moves (now, if it is thinking) |
 | `u` | take back your last move |
 | `n` | new game |
+| `[` `]` | look back through the game a move at a time (`Home`, `End`); moves wait until you're back at the end |
 | `t` | turn the board around |
 | `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
 | `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
+
+## View a PGN game
+
+```sh
+cbtui --pgn game.pgn        # the first game in the file; no engine needed
+```
+
+The board is read-only and the panels show the game's players, event and result, its moves
+with the variations in brackets, and the comments on the move shown.
+
+| Key | |
+| --- | --- |
+| `←` `→` | a move back or on, along the line you're in (also `[` `]`) |
+| `↑` `↓` | the start of the game, the end of the line (also `Home`, `End`) |
+| `1`–`9` | into a variation that starts at this move (the bottom panel lists them) |
+| `:play white\|black\|both\|none` | play on from the position shown: the engine plays the side(s) named, `none` for you to play both |
 
 ## Terminal compatibility
 
