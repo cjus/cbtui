@@ -38,8 +38,9 @@
 //! to where they were before the moves taken back.
 //!
 //! `:resign` resigns the person's side. `:draw` offers the engine a draw, which it answers
-//! with its next move: it accepts when its search's score says it isn't better
-//! ([`accepts_draw`]), from what it reported, never from cbtui's own judgement. A resignation
+//! with its next move: from move [`DRAW_MIN_MOVE`] on, it accepts when its search's score
+//! says it is clearly worse ([`accepts_draw`]), from what it reported, never from cbtui's own
+//! judgement. A resignation
 //! or an agreed draw can be taken back (`u`), and the game goes on.
 //!
 //! ## The engine's turn
@@ -105,9 +106,12 @@ pub const CLOCK_FALLBACK_MOVES: u64 = 30;
 /// it is given never quite uses up its clock.
 pub const CLOCK_SAFETY_MS: u64 = 50;
 
-/// The engine accepts a draw offer when its own score is at most this, in centipawns: when
-/// it doesn't think it's better.
-pub const DRAW_ACCEPT_CP: i32 = 10;
+/// The engine accepts a draw offer when its own score is at most this, in centipawns: when it
+/// is clearly worse, by half a pawn or more.
+pub const DRAW_ACCEPT_CP: i32 = -50;
+
+/// The engine considers a draw offer only from this move number on; before it, it declines.
+pub const DRAW_MIN_MOVE: u32 = 30;
 
 /// How many lines of the engine's stderr are kept.
 const STDERR_LINES: usize = 50;
@@ -1345,6 +1349,11 @@ impl App {
                 "You offer a draw. {} answers with its next move.",
                 self.node.name
             );
+            if self.game.position().fullmove_number() < DRAW_MIN_MOVE {
+                self.status.push_str(&format!(
+                    " (It considers draws only from move {DRAW_MIN_MOVE}.)"
+                ));
+            }
             return;
         }
         self.game.agree_draw();
@@ -1924,11 +1933,16 @@ impl App {
         }
         // A PGN comment with the score and depth, as engines' games usually have (`+0.35/18`).
         let comment = score.map(|score| format!("{}/{}", score_text(score), result.depth));
-        // A draw offer is answered with the engine's move: it accepts if its own score says
-        // it isn't better, and the move isn't played.
+        // A draw offer is answered with the engine's move: it accepts if it's late enough and
+        // its own score says it's clearly worse, and then the move isn't played.
         let engine_side = self.settings.engine_plays[position.side_to_move().index()];
         let answering = engine_side && std::mem::take(&mut self.draw_offered);
-        if answering && result.score.is_some_and(accepts_draw) {
+        let move_number = position.fullmove_number();
+        if answering
+            && result
+                .score
+                .is_some_and(|score| accepts_draw(score, move_number))
+        {
             self.game.agree_draw();
             self.game_ended(engine);
             self.status = format!("{} accepts the draw. {}", self.node.name, self.status);
@@ -1939,7 +1953,12 @@ impl App {
             // A picker opened for the side the engine just moved for is stale now.
             self.promotion = None;
             self.selected = None;
-            self.status = if answering {
+            self.status = if answering && move_number < DRAW_MIN_MOVE {
+                format!(
+                    "{} declines the draw (it considers one from move {DRAW_MIN_MOVE}) and plays {san}.",
+                    self.node.name
+                )
+            } else if answering {
                 format!("{} declines the draw and plays {san}.", self.node.name)
             } else {
                 format!("{} played {san}.", self.node.name)
@@ -1949,9 +1968,13 @@ impl App {
     }
 }
 
-/// Whether an engine whose search scored `score` (from its own point of view) accepts a draw:
-/// when it doesn't think it's better ([`DRAW_ACCEPT_CP`]), or it is being mated.
-pub fn accepts_draw(score: Score) -> bool {
+/// Whether an engine whose search scored `score` (from its own point of view) at move
+/// `move_number` accepts a draw: from [`DRAW_MIN_MOVE`] on, when it is clearly worse
+/// ([`DRAW_ACCEPT_CP`]) or being mated.
+pub fn accepts_draw(score: Score, move_number: u32) -> bool {
+    if move_number < DRAW_MIN_MOVE {
+        return false;
+    }
     match score.value {
         ScoreValue::Centipawns(cp) => cp <= DRAW_ACCEPT_CP,
         ScoreValue::Mate(n) => n < 0,
@@ -2345,24 +2368,46 @@ mod tests {
                 .unwrap(),
             ))
         };
-        // Ahead by 0.40 for itself: it declines and plays on.
+        // Move 1: too early, however bad it thinks things are.
         let (mut app, mut engine) = (app(), FakeEngine::default());
         type_line(&mut app, &mut engine, "e4");
         type_line(&mut app, &mut engine, ":draw");
         assert!(app.draw_offered);
-        app.handle_node(answer_scored(101, 40), &mut engine);
+        assert!(app.status.contains("from move 30"), "{}", app.status);
+        app.handle_node(answer_scored(101, -300), &mut engine);
         assert!(!app.draw_offered);
         assert_eq!(app.game.moves().len(), 2);
-        assert!(app.status.contains("declines"), "{}", app.status);
+        assert!(
+            app.status.contains("declines the draw (it considers"),
+            "{}",
+            app.status
+        );
 
-        // Level for itself: it accepts, and its move isn't played.
-        let (mut app, mut engine) = (self::app(), FakeEngine::default());
-        type_line(&mut app, &mut engine, ":draw");
-        type_line(&mut app, &mut engine, "e4");
-        app.handle_node(answer_scored(101, 0), &mut engine);
+        // Move 40, a pawn up for White (the person): Black, the engine, is clearly worse.
+        let late = |cp: i32| {
+            let settings = Settings {
+                fen: Some("4k3/4p3/8/8/8/8/3PP3/4K3 w - - 0 40".into()),
+                ..Settings::default()
+            };
+            let (mut app, mut engine) =
+                (App::new(node(), settings).unwrap(), FakeEngine::default());
+            type_line(&mut app, &mut engine, ":draw");
+            type_line(&mut app, &mut engine, "d4");
+            app.handle_node(answer_scored(101, cp), &mut engine);
+            app
+        };
+        let app = late(-60);
         assert_eq!(app.game.outcome(), Some(Outcome::DrawAgreed));
-        assert_eq!(app.game.moves().len(), 1);
+        assert_eq!(app.game.moves().len(), 1, "its move isn't played");
         assert!(app.status.starts_with("eng accepts"), "{}", app.status);
+        // Only a little worse: it plays on.
+        let app = late(-20);
+        assert_eq!(app.game.outcome(), None);
+        assert!(
+            app.status.starts_with("eng declines the draw and plays"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]
@@ -2374,7 +2419,9 @@ mod tests {
         let (mut app, mut engine) = (App::new(node(), settings).unwrap(), FakeEngine::default());
         type_line(&mut app, &mut engine, ":draw");
         assert_eq!(app.game.outcome(), Some(Outcome::DrawAgreed));
-        assert!(accepts_draw(Score::mate(-3)) && !accepts_draw(Score::mate(2)));
+        assert!(accepts_draw(Score::mate(-3), 40) && !accepts_draw(Score::mate(2), 40));
+        assert!(!accepts_draw(Score::mate(-3), 29), "not before move 30");
+        assert!(accepts_draw(Score::cp(-50), 30) && !accepts_draw(Score::cp(-49), 30));
     }
 
     #[test]

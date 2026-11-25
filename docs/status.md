@@ -66,6 +66,10 @@ changes the picture.
   one's decisions in full. → asks `engine/treeNode` for the next level, ← goes back, and the
   board shows the node's position. An expired tree closes and says to search again. Tried in
   tmux (2026-11-24): a depth-8 tree after 1. e4 e5 2. Nf3 Nc6, walked into 3. Bb5 Nd4.
+- **Draw offers: stricter** (fourteenth PR, Carlos's choice in #14). The engine considers a
+  draw only from move 30, and accepts only when it is clearly worse (-0.50 or less for
+  itself) or being mated; declining early, it says so. Tried in tmux with cb2026
+  (2026-11-25): declined after 1. e4, accepted at move 40 a queen down.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.

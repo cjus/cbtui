@@ -61,8 +61,8 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 With a clock, the clocks start with the first move and stand beside the players' names. An
 engine that can read a clock (the CNP `clock` capability, as cb2026 can) is sent both and
 decides its own time; one that can't gets a share of its time left each move. `:draw` offers
-the engine a draw, which it answers with its next move: it accepts when its own score says it
-isn't better. `u` takes back a resignation or an agreed draw.
+the engine a draw, which it answers with its next move: from move 30 on, it accepts when its
+own score says it is clearly worse (by half a pawn or more), or that it is being mated. `u` takes back a resignation or an agreed draw.
 
 Analysing (`i`), the engine plays neither side and the clocks stop: move for both sides,
 or look back with `[` `]`, and the engine panel follows the position on the board with its
