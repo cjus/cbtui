@@ -9,7 +9,14 @@ changes the picture.
   arrow keys and typed SAN or coordinates; the engine plays white, black, both or none; levels
   with their ratings (from `engine/levels`) and time per move; live thinking (depth, score,
   nodes, speed, PV in SAN); move list; undo, new game, FEN, flip; PGN save; help overlay.
-- Tests: 29 unit tests (the app against a fake engine, the CNP client against a fake node over
+- **Piece pictures: built** (second PR). On terminals with an image protocol the pieces are
+  the Cburnett pictures, filling square squares, and the board fills its panel; elsewhere and
+  in tmux they are two letters (`WK`). Checked in Ghostty by Carlos (2026-11-24, the README's
+  screenshot); kitty, iTerm2 and WezTerm not tried yet.
+- Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
+  doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
+  happened; elsewhere it says so on the status line if it happens.
+- Tests: 37 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).

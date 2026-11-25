@@ -77,8 +77,6 @@ pub struct Settings {
     pub movetime_ms: u64,
     /// The engine's playing level, if it has levels; `None` is full strength.
     pub level: Option<f64>,
-    /// Draw pieces as letters instead of chess symbols.
-    pub ascii: bool,
     /// The position to start from, if not the usual one.
     pub fen: Option<String>,
 }
@@ -89,7 +87,6 @@ impl Default for Settings {
             engine_plays: [false, true],
             movetime_ms: DEFAULT_MOVETIME_MS,
             level: None,
-            ascii: false,
             fen: None,
         }
     }

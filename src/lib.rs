@@ -12,6 +12,7 @@
 //! - [`rules`]: legality, notation and game endings, from a rules library;
 //! - [`app`]: the state of a session, and what input and engine messages do to it;
 //! - [`ui`]: drawing it with [Ratatui](https://ratatui.rs);
+//! - [`pieces`]: pieces as pictures where the terminal can show them, else as letters;
 //! - [`args`]: the command line.
 //!
 //! The binary (`src/main.rs`) ties them together: it runs the terminal, and a loop that
@@ -20,5 +21,6 @@
 pub mod app;
 pub mod args;
 pub mod node;
+pub mod pieces;
 pub mod rules;
 pub mod ui;

@@ -1,6 +1,7 @@
 //! The command line.
 
 use crate::app::{MAX_MOVETIME_MS, Settings};
+use crate::pieces::PieceChoice;
 
 /// The engine started when none is named: `cb2026` from the `PATH`, in CNP mode.
 pub const DEFAULT_ENGINE: &str = "cb2026";
@@ -24,7 +25,9 @@ Options:
   --level <n>            The engine's playing level, if it has levels (default: full strength)
   --movetime <ms>        How long the engine thinks a move (default: 1000)
   --fen <FEN>            Start from this position
-  --ascii                Draw pieces as letters
+  --pieces <style>       auto (default): pictures if the terminal can show them (not
+                         inside tmux), else letters; letters: WK, BP; symbols: chess
+                         symbols. --ascii is the same as --pieces letters
   -h, --help             This help
   -V, --version          The version";
 
@@ -39,6 +42,8 @@ pub enum Args {
         engine_args: Vec<String>,
         /// The session's settings.
         settings: Settings,
+        /// How to draw the pieces.
+        pieces: PieceChoice,
     },
     /// Print the help.
     Help,
@@ -54,6 +59,7 @@ pub fn parse(
     let mut engine = env_engine.filter(|e| !e.is_empty());
     let mut engine_args: Vec<String> = Vec::new();
     let mut settings = Settings::default();
+    let mut pieces = PieceChoice::Auto;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
@@ -95,7 +101,20 @@ pub fn parse(
                     })?;
             }
             "--fen" => settings.fen = Some(value("--fen")?),
-            "--ascii" => settings.ascii = true,
+            // The old name for letters, kept so it still works.
+            "--ascii" => pieces = PieceChoice::Letters,
+            "--pieces" => {
+                pieces = match value("--pieces")?.as_str() {
+                    "auto" => PieceChoice::Auto,
+                    "letters" => PieceChoice::Letters,
+                    "symbols" => PieceChoice::Symbols,
+                    other => {
+                        return Err(format!(
+                            "--pieces takes auto, letters or symbols, not `{other}`"
+                        ));
+                    }
+                }
+            }
             other => return Err(format!("unknown option `{other}` (try --help)")),
         }
     }
@@ -106,6 +125,7 @@ pub fn parse(
         engine: engine.unwrap_or_else(|| DEFAULT_ENGINE.to_string()),
         engine_args,
         settings,
+        pieces,
     })
 }
 
@@ -123,6 +143,7 @@ mod tests {
             engine,
             engine_args,
             settings,
+            ..
         } = run(&[], None).unwrap()
         else {
             panic!()
@@ -158,15 +179,7 @@ mod tests {
     #[test]
     fn reads_the_settings() {
         let Args::Run { settings, .. } = run(
-            &[
-                "--play",
-                "white",
-                "--level",
-                "8",
-                "--movetime",
-                "250",
-                "--ascii",
-            ],
+            &["--play", "white", "--level", "8", "--movetime", "250"],
             None,
         )
         .unwrap() else {
@@ -175,7 +188,21 @@ mod tests {
         assert_eq!(settings.engine_plays, [true, false]);
         assert_eq!(settings.level, Some(8.0));
         assert_eq!(settings.movetime_ms, 250);
-        assert!(settings.ascii);
+    }
+
+    #[test]
+    fn reads_the_piece_style() {
+        let style = |args: &[&str]| match run(args, None).unwrap() {
+            Args::Run { pieces, .. } => pieces,
+            _ => panic!(),
+        };
+        assert_eq!(style(&[]), PieceChoice::Auto);
+        assert_eq!(style(&["--pieces", "letters"]), PieceChoice::Letters);
+        assert!(
+            run(&["--pieces", "emoji"], None)
+                .unwrap_err()
+                .contains("emoji")
+        );
     }
 
     #[test]
