@@ -219,7 +219,7 @@ impl App {
         match self.selected {
             Some(from) => rules::moves_from(self.game.position(), from)
                 .iter()
-                .map(|mv| mv.to())
+                .map(|mv| rules::destination(*mv))
                 .collect(),
             None => Vec::new(),
         }
@@ -836,6 +836,27 @@ mod tests {
         app.handle_click(sq("f3"), &mut engine);
         assert_eq!(app.game.moves()[0].san, "Nf3");
         assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn clicking_the_king_then_g1_castles() {
+        let mut engine = FakeEngine::default();
+        let settings = Settings {
+            fen: Some("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1".into()),
+            ..Settings::default()
+        };
+        let mut app = App::new(node(), settings).unwrap();
+        app.handle_click(sq("e1"), &mut engine);
+        // The dots are where the king lands, not on the rooks.
+        let targets = app.targets();
+        assert!(
+            targets.contains(&sq("g1")) && targets.contains(&sq("c1")),
+            "{targets:?}"
+        );
+        assert!(!targets.contains(&sq("h1")), "{targets:?}");
+        app.handle_click(sq("g1"), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "O-O");
+        assert_eq!(engine.searches[0].position.moves, ["e1g1"]);
     }
 
     #[test]
