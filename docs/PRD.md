@@ -88,9 +88,10 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Clocks start with the first move, and a takeback puts them back to where they stood
       when the moves taken back were played. An engine without the `clock` capability gets
       1/30 of its time left plus the increment each move (2026-11-24).
-- [x] The engine answers a draw offer with its next move, from its own reported score: it
-      accepts at +0.10 or less for itself, or when it is being mated. cbtui doesn't judge the
-      position (2026-11-24).
+- [x] The engine answers a draw offer with its next move, from its own reported score: from
+      move 30 on, it accepts at -0.50 or less for itself, or when it is being mated; before
+      move 30 it declines. cbtui doesn't judge the position (Carlos, 2026-11-25; it accepted
+      at +0.10 or less, from any move, before).
 - [x] Analysis is `i` (and `:analyse`): `a` to `h` start typed moves. It searches the game
       up to the position on the board, so the engine sees repetitions, and asks for every
       progress report when it wants several lines, since an engine that throttles all its
