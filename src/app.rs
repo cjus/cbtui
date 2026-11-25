@@ -1,0 +1,985 @@
+//! The application: the game, whose move it is, what the engine is doing, and what keys,
+//! clicks and engine messages do to them.
+//!
+//! [`App`] holds no terminal and no process. It reacts to input ([`App::handle_key`],
+//! [`App::handle_click`]) and to the engine ([`App::handle_node`]), and asks the engine for
+//! work through the [`Engine`] trait, so tests drive it with a fake engine and read its state.
+//!
+//! ## Engine-agnostic by design
+//!
+//! Everything the engine can do is read from its `initialize` answer ([`NodeSummary`]): levels
+//! are offered only when it has the `strength` capability, live thinking only with `progress`.
+//! A newer engine with more capabilities works unchanged, and its extra features can be
+//! switched on here as cbtui learns them.
+//!
+//! ## The engine's turn
+//!
+//! After every change, [`App`] checks whether the engine plays the side to move. If so, and no
+//! search is running, it sends one with the whole game (start FEN and moves, so the engine sees
+//! repetitions) and remembers the request id and the game's length. When the answer comes, it
+//! is played only if both still match: a takeback or a new game in between makes it stale.
+
+use std::fs;
+
+use cnp::engine::{
+    self as proto, EngineCapabilities, LevelsResult, Score, ScoreValue, SearchLimits, SearchParams,
+    Strength,
+};
+use cnp::{Response, code};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+use crate::node::{Engine, NodeEvent};
+use crate::rules::{self, Color, Game, Square};
+
+/// How often a search reports progress, in milliseconds, when the engine can.
+pub const PROGRESS_MS: u64 = 200;
+
+/// How long the engine thinks about a move by default, in milliseconds.
+pub const DEFAULT_MOVETIME_MS: u64 = 1000;
+
+/// The longest the engine may be asked to think about one move, in milliseconds.
+pub const MAX_MOVETIME_MS: u64 = 600_000;
+
+/// How many lines of the engine's stderr are kept.
+const STDERR_LINES: usize = 50;
+
+/// What the engine said about itself, kept for the screen and for deciding what to offer.
+#[derive(Clone, Debug, Default)]
+pub struct NodeSummary {
+    /// Its name, like `cb2026`.
+    pub name: String,
+    /// Its version.
+    pub version: String,
+    /// Its licence (an SPDX expression).
+    pub license: String,
+    /// What it can do. All `false` if it isn't an engine node.
+    pub caps: EngineCapabilities,
+}
+
+impl NodeSummary {
+    /// The summary of an `initialize` answer.
+    pub fn from_info(info: &cnp::lifecycle::InitializeResult) -> NodeSummary {
+        NodeSummary {
+            name: info.node.name.clone(),
+            version: info.node.version.clone(),
+            license: info.node.license.clone(),
+            caps: info.capabilities.engine.clone().unwrap_or_default(),
+        }
+    }
+}
+
+/// The choices a session starts with (from the command line).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    /// Which sides the engine plays, indexed by [`Color::index`].
+    pub engine_plays: [bool; 2],
+    /// How long the engine thinks about each move, in milliseconds.
+    pub movetime_ms: u64,
+    /// The engine's playing level, if it has levels; `None` is full strength.
+    pub level: Option<f64>,
+    /// Draw pieces as letters instead of chess symbols.
+    pub ascii: bool,
+    /// The position to start from, if not the usual one.
+    pub fen: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            engine_plays: [false, true],
+            movetime_ms: DEFAULT_MOVETIME_MS,
+            level: None,
+            ascii: false,
+            fen: None,
+        }
+    }
+}
+
+/// The engine's latest report on its current or last search.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thinking {
+    /// Depth reached, and the deepest line.
+    pub depth: u32,
+    /// The deepest ply any line reached.
+    pub sel_depth: u32,
+    /// The score, from White's point of view.
+    pub score: Score,
+    /// Positions searched.
+    pub nodes: u64,
+    /// Positions per second, if the engine said.
+    pub nps: Option<u64>,
+    /// Time spent, in milliseconds.
+    pub time_ms: u64,
+    /// The best line, in SAN.
+    pub pv: Vec<String>,
+}
+
+/// A search the app is waiting on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pending {
+    /// The `engine/search` request's id.
+    id: i64,
+    /// How many moves the game had when it was sent.
+    ply: usize,
+}
+
+/// The whole application state.
+#[derive(Debug)]
+pub struct App {
+    /// The game being played.
+    pub game: Game,
+    /// The session's settings (which sides the engine plays, its time and level).
+    pub settings: Settings,
+    /// The engine.
+    pub node: NodeSummary,
+    /// The engine's levels, once it has said them.
+    pub levels: Option<LevelsResult>,
+    /// Whether Black is at the bottom of the board.
+    pub flipped: bool,
+    /// The keyboard cursor.
+    pub cursor: Square,
+    /// Whether to show the cursor (after the arrow keys are used, not after a click).
+    pub cursor_visible: bool,
+    /// The square whose piece is picked up.
+    pub selected: Option<Square>,
+    /// The line being typed: a move, or a command after `:`.
+    pub input: Option<String>,
+    /// The message under the board.
+    pub status: String,
+    /// The engine's latest report.
+    pub thinking: Option<Thinking>,
+    /// Whether the help is showing.
+    pub show_help: bool,
+    /// The engine's recent stderr lines, oldest first.
+    pub stderr: Vec<String>,
+    /// Whether the engine has gone.
+    pub disconnected: bool,
+    /// Set when the user asks to leave.
+    pub quit: bool,
+    pending: Option<Pending>,
+    /// The `engine/levels` request's id, until it is answered.
+    levels_request: Option<i64>,
+    /// Counts games, to tell the engine when a new one starts (the `game` hint).
+    game_number: u32,
+}
+
+impl App {
+    /// A new session with `node` and `settings`. Fails if the starting FEN can't be read.
+    pub fn new(node: NodeSummary, settings: Settings) -> Result<App, String> {
+        let game = match &settings.fen {
+            Some(fen) => Game::from_fen(fen).map_err(|e| format!("bad FEN: {e:?}"))?,
+            None => Game::new(),
+        };
+        let status = format!(
+            "Connected to {} {}. Press ? for help.",
+            node.name, node.version
+        );
+        Ok(App {
+            game,
+            settings,
+            node,
+            levels: None,
+            flipped: false,
+            cursor: rules::square(4, 1).expect("e2 is on the board"),
+            cursor_visible: false,
+            selected: None,
+            input: None,
+            status,
+            thinking: None,
+            show_help: false,
+            stderr: Vec::new(),
+            disconnected: false,
+            quit: false,
+            pending: None,
+            levels_request: None,
+            game_number: 1,
+        })
+    }
+
+    /// Starts the session: if the engine plays the side to move (`--play white`), it starts
+    /// thinking at once.
+    pub fn start(&mut self, engine: &mut dyn Engine) {
+        self.maybe_start_engine(engine);
+    }
+
+    /// Records that `engine/levels` was sent with this id.
+    pub fn expect_levels(&mut self, id: i64) {
+        self.levels_request = Some(id);
+    }
+
+    /// Whether a search is running.
+    pub fn searching(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Whether the engine plays the side to move.
+    pub fn engine_to_move(&self) -> bool {
+        self.settings.engine_plays[self.game.position().side_to_move().index()]
+    }
+
+    /// The legal destinations of the picked-up piece.
+    pub fn targets(&self) -> Vec<Square> {
+        match self.selected {
+            Some(from) => rules::moves_from(self.game.position(), from)
+                .iter()
+                .map(|mv| mv.to())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// A short description of a level, like `level 10 (1600)`.
+    pub fn level_text(&self) -> Option<String> {
+        let level = self.settings.level?;
+        let rating = self.levels.as_ref().and_then(|levels| {
+            levels
+                .levels
+                .iter()
+                .find(|l| f64::from(l.level) == level)
+                .map(|l| l.rating)
+        });
+        Some(match rating {
+            Some(rating) => format!("level {level} ({rating})"),
+            None => format!("level {level}"),
+        })
+    }
+
+    // ---- input -------------------------------------------------------------------------
+
+    /// Reacts to a key.
+    pub fn handle_key(&mut self, key: KeyEvent, engine: &mut dyn Engine) {
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.quit = true;
+            return;
+        }
+        if self.input.is_some() {
+            self.handle_input_key(key, engine);
+            return;
+        }
+        if self.show_help {
+            self.show_help = false;
+            return;
+        }
+        match key.code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char(':') => self.input = Some(":".into()),
+            KeyCode::Char('n') => self.new_game(None, engine),
+            KeyCode::Char('u') => self.undo(engine),
+            KeyCode::Char('t') => self.flipped = !self.flipped,
+            // `m`: the engine moves (now, if it is thinking already).
+            KeyCode::Char('m') if self.searching() => self.move_now(engine),
+            KeyCode::Char('m') => self.go(engine),
+            // The first letter of a move in SAN or coordinates starts typing it.
+            KeyCode::Char(c @ ('a'..='h' | 'N' | 'B' | 'R' | 'Q' | 'K' | 'O' | '0')) => {
+                self.input = Some(c.to_string());
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => {
+                self.move_cursor(key.code);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.cursor_visible = true;
+                self.handle_square(self.cursor, engine);
+            }
+            KeyCode::Esc => self.selected = None,
+            _ => {}
+        }
+    }
+
+    fn handle_input_key(&mut self, key: KeyEvent, engine: &mut dyn Engine) {
+        let Some(input) = &mut self.input else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.input = None,
+            KeyCode::Backspace => {
+                input.pop();
+                if input.is_empty() {
+                    self.input = None;
+                }
+            }
+            KeyCode::Enter => {
+                let line = self.input.take().unwrap_or_default();
+                match line.strip_prefix(':') {
+                    Some(command) => self.command(command, engine),
+                    None => self.typed_move(line.trim(), engine),
+                }
+            }
+            KeyCode::Char(c) => input.push(c),
+            _ => {}
+        }
+    }
+
+    fn move_cursor(&mut self, code: KeyCode) {
+        self.cursor_visible = true;
+        let (mut file, mut rank) = (
+            self.cursor.file().index() as i32,
+            self.cursor.rank().index() as i32,
+        );
+        // On the screen, "up" is towards Black's side unless the board is flipped.
+        let sign = if self.flipped { -1 } else { 1 };
+        match code {
+            KeyCode::Left => file -= sign,
+            KeyCode::Right => file += sign,
+            KeyCode::Up => rank += sign,
+            KeyCode::Down => rank -= sign,
+            _ => {}
+        }
+        let clamp = |v: i32| v.clamp(0, 7) as usize;
+        self.cursor = rules::square(clamp(file), clamp(rank)).expect("clamped onto the board");
+    }
+
+    /// Reacts to a click on `square`.
+    pub fn handle_click(&mut self, square: Square, engine: &mut dyn Engine) {
+        self.cursor = square;
+        self.cursor_visible = false;
+        self.handle_square(square, engine);
+    }
+
+    /// Picks up a piece on `square`, or puts the picked-up one down there.
+    fn handle_square(&mut self, square: Square, engine: &mut dyn Engine) {
+        let position = self.game.position().clone();
+        if let Some(from) = self.selected
+            && let Some(mv) = rules::move_between(&position, from, square)
+        {
+            self.selected = None;
+            self.human_move(mv, engine);
+            return;
+        }
+        let own_piece = position
+            .piece_at(square)
+            .is_some_and(|piece| piece.color == position.side_to_move());
+        if own_piece && self.selected != Some(square) {
+            self.selected = Some(square);
+        } else {
+            self.selected = None;
+        }
+    }
+
+    fn typed_move(&mut self, text: &str, engine: &mut dyn Engine) {
+        if text.is_empty() {
+            return;
+        }
+        match self.game.position().parse_move(text) {
+            Ok(mv) => self.human_move(mv, engine),
+            Err(e) => self.status = format!("Can't play `{text}`: {e}"),
+        }
+    }
+
+    /// Plays a person's move, if it's their turn.
+    fn human_move(&mut self, mv: rules::Move, engine: &mut dyn Engine) {
+        if let Some(outcome) = self.game.outcome() {
+            self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
+            return;
+        }
+        if self.engine_to_move() {
+            self.status = format!(
+                "It's {}'s move. Press m to make it move now, or :play none to take over.",
+                self.node.name
+            );
+            return;
+        }
+        if self.searching() {
+            // A search started with `g` for this side: the person moved instead.
+            self.cancel_search(engine);
+        }
+        let san = self.game.position().to_san(mv);
+        if self.game.play(mv).is_ok() {
+            self.selected = None;
+            self.status = format!("You played {san}.");
+            self.after_move(engine);
+        }
+    }
+
+    // ---- commands ----------------------------------------------------------------------
+
+    /// Runs a `:` command.
+    pub fn command(&mut self, line: &str, engine: &mut dyn Engine) {
+        let mut words = line.split_whitespace();
+        let name = words.next().unwrap_or("");
+        let rest: Vec<&str> = words.collect();
+        match (name, rest.as_slice()) {
+            ("" | "help" | "h", _) => self.show_help = true,
+            ("q" | "quit" | "exit", _) => self.quit = true,
+            ("new", _) => self.new_game(None, engine),
+            ("fen", fen) if !fen.is_empty() => self.new_game(Some(fen.join(" ")), engine),
+            ("flip", _) => self.flipped = !self.flipped,
+            ("undo", _) => self.undo(engine),
+            ("go", _) => self.go(engine),
+            ("stop", _) => self.move_now(engine),
+            ("play", [side]) => self.set_play(side, engine),
+            ("level", [level]) => self.set_level(level),
+            ("level", []) => {
+                self.status = match self.level_text() {
+                    Some(text) => format!("Playing at {text}."),
+                    None => "Playing at full strength.".into(),
+                }
+            }
+            ("time" | "movetime", [ms]) => match ms.parse::<u64>() {
+                Ok(ms) if (1..=MAX_MOVETIME_MS).contains(&ms) => {
+                    self.settings.movetime_ms = ms;
+                    self.status = format!("The engine now thinks {ms} ms a move.");
+                }
+                _ => self.status = format!("Usage: :time <1-{MAX_MOVETIME_MS}> (milliseconds)"),
+            },
+            ("pgn", [path]) => self.save_pgn(path),
+            _ => self.status = format!("Unknown command `:{line}`. Press ? for help."),
+        }
+    }
+
+    fn set_play(&mut self, side: &str, engine: &mut dyn Engine) {
+        self.settings.engine_plays = match side {
+            "white" | "w" => [true, false],
+            "black" | "b" => [false, true],
+            "both" => [true, true],
+            "none" => [false, false],
+            _ => {
+                self.status = "Usage: :play white|black|both|none".into();
+                return;
+            }
+        };
+        self.status = format!("{} plays {side}.", self.node.name);
+        self.maybe_start_engine(engine);
+    }
+
+    fn set_level(&mut self, text: &str) {
+        if !self.node.caps.strength {
+            self.status = format!("{} has no playing levels.", self.node.name);
+            return;
+        }
+        if matches!(text, "max" | "full" | "off") {
+            self.settings.level = None;
+            self.status = "Playing at full strength.".into();
+            return;
+        }
+        let Ok(level) = text.parse::<f64>() else {
+            self.status = "Usage: :level <n>|max".into();
+            return;
+        };
+        if let Some(levels) = &self.levels {
+            let min = levels.levels.first().map_or(0, |l| l.level);
+            let max = levels.levels.last().map_or(0, |l| l.level);
+            let whole = level.fract() == 0.0;
+            if level < f64::from(min) || level > f64::from(max) || !(whole || levels.fractional) {
+                self.status = format!("Levels go from {min} to {max}.");
+                return;
+            }
+        }
+        self.settings.level = Some(level);
+        self.status = format!(
+            "Playing at {}.",
+            self.level_text()
+                .unwrap_or_else(|| format!("level {level}"))
+        );
+    }
+
+    fn save_pgn(&mut self, path: &str) {
+        let mut pgn = self.game.to_pgn();
+        let engine = format!("{} {}", self.node.name, self.node.version);
+        let name = |color: Color| {
+            if self.settings.engine_plays[color.index()] {
+                engine.clone()
+            } else {
+                "Human".to_string()
+            }
+        };
+        pgn.set_tag("Event", "cbtui game");
+        pgn.set_tag("White", &name(Color::White));
+        pgn.set_tag("Black", &name(Color::Black));
+        self.status = match fs::write(path, pgn.to_pgn()) {
+            Ok(()) => format!("Saved the game to {path}."),
+            Err(e) => format!("Couldn't save {path}: {e}"),
+        };
+    }
+
+    fn new_game(&mut self, fen: Option<String>, engine: &mut dyn Engine) {
+        let game = match &fen {
+            Some(fen) => match Game::from_fen(fen) {
+                Ok(game) => game,
+                Err(e) => {
+                    self.status = format!("Bad FEN: {e:?}");
+                    return;
+                }
+            },
+            None => Game::new(),
+        };
+        self.cancel_search(engine);
+        self.game = game;
+        self.game_number += 1;
+        self.selected = None;
+        self.thinking = None;
+        self.status = "New game.".into();
+        self.maybe_start_engine(engine);
+    }
+
+    /// Takes back the last move, and the engine's reply before it, so it's the person's turn.
+    fn undo(&mut self, engine: &mut dyn Engine) {
+        self.cancel_search(engine);
+        if self.game.undo().is_none() {
+            self.status = "No move to take back.".into();
+            return;
+        }
+        let one_engine = self.settings.engine_plays.iter().filter(|&&p| p).count() == 1;
+        if one_engine && self.engine_to_move() {
+            self.game.undo();
+        }
+        self.selected = None;
+        self.thinking = None;
+        self.status = "Took back.".into();
+        self.maybe_start_engine(engine);
+    }
+
+    /// Makes the engine play the side to move now, whoever plays it.
+    fn go(&mut self, engine: &mut dyn Engine) {
+        if self.searching() {
+            self.status = format!("{} is already thinking.", self.node.name);
+            return;
+        }
+        self.start_search(engine);
+    }
+
+    /// Asks a running search to stop; its best move so far is then played.
+    fn move_now(&mut self, engine: &mut dyn Engine) {
+        match self.pending {
+            Some(pending) => {
+                if let Err(e) = engine.stop(pending.id) {
+                    self.status = e;
+                }
+            }
+            None => self.status = format!("{} isn't thinking.", self.node.name),
+        }
+    }
+
+    // ---- the engine --------------------------------------------------------------------
+
+    fn after_move(&mut self, engine: &mut dyn Engine) {
+        if let Some(outcome) = self.game.outcome() {
+            self.status = rules::describe_outcome(outcome);
+            return;
+        }
+        self.maybe_start_engine(engine);
+    }
+
+    /// Starts a search if the engine plays the side to move and isn't searching already.
+    fn maybe_start_engine(&mut self, engine: &mut dyn Engine) {
+        if self.engine_to_move() && !self.searching() && self.game.outcome().is_none() {
+            self.start_search(engine);
+        }
+    }
+
+    fn start_search(&mut self, engine: &mut dyn Engine) {
+        if self.disconnected {
+            self.status = "The engine has gone. Restart cbtui.".into();
+            return;
+        }
+        if let Some(outcome) = self.game.outcome() {
+            self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
+            return;
+        }
+        match engine.search(&self.search_params()) {
+            Ok(id) => {
+                self.pending = Some(Pending {
+                    id,
+                    ply: self.game.moves().len(),
+                });
+                self.thinking = None;
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// The search for the current position: the whole game, the time per move, the level
+    /// and progress reports if the engine can do them.
+    pub fn search_params(&self) -> SearchParams {
+        let position = proto::Position::fen(self.game.start().to_fen())
+            .with_moves(rules::game_moves_uci(&self.game));
+        let mut params = SearchParams::new(position).limits(SearchLimits {
+            time_ms: Some(self.settings.movetime_ms),
+            ..SearchLimits::default()
+        });
+        if self.node.caps.strength
+            && let Some(level) = self.settings.level
+        {
+            params.strength = Some(Strength {
+                level: Some(level),
+                elo: None,
+            });
+        }
+        if self.node.caps.progress {
+            params.progress_ms = Some(PROGRESS_MS);
+        }
+        // Lets the engine keep what it learned (its hash table) from move to move.
+        params.game = Some(format!("cbtui-{}", self.game_number));
+        params
+    }
+
+    /// Stops the running search, if any, and forgets it: its answer will be ignored.
+    fn cancel_search(&mut self, engine: &mut dyn Engine) {
+        if let Some(pending) = self.pending.take() {
+            let _ = engine.stop(pending.id);
+        }
+    }
+
+    /// Reacts to something from the engine.
+    pub fn handle_node(&mut self, event: NodeEvent, engine: &mut dyn Engine) {
+        match event {
+            NodeEvent::Progress(progress) => {
+                let current = self
+                    .pending
+                    .is_some_and(|pending| progress.id == pending.id.into());
+                if current && progress.multipv.unwrap_or(1) == 1 {
+                    let position = self.game.position();
+                    self.thinking = Some(Thinking {
+                        depth: progress.depth,
+                        sel_depth: progress.sel_depth,
+                        score: white_view(progress.score, position.side_to_move()),
+                        nodes: progress.nodes,
+                        nps: progress.nps,
+                        time_ms: progress.time_ms,
+                        pv: rules::line_to_san(position, &progress.pv),
+                    });
+                }
+            }
+            NodeEvent::Response(response) => self.handle_response(response, engine),
+            NodeEvent::Stderr(line) => {
+                if self.stderr.len() == STDERR_LINES {
+                    self.stderr.remove(0);
+                }
+                self.status = format!("{}: {line}", self.node.name);
+                self.stderr.push(line);
+            }
+            NodeEvent::Closed(reason) => {
+                self.disconnected = true;
+                self.pending = None;
+                self.status = format!("Engine disconnected: {reason}");
+            }
+        }
+    }
+
+    fn handle_response(&mut self, response: Response, engine: &mut dyn Engine) {
+        let Some(cnp::Id::Number(id)) = response.id else {
+            return;
+        };
+        if self.levels_request == Some(id) {
+            self.levels_request = None;
+            if let Ok(levels) = response.result::<proto::Levels>() {
+                self.levels = Some(levels);
+            }
+            return;
+        }
+        let Some(pending) = self.pending.filter(|pending| pending.id == id) else {
+            // A stale search, or a stop's acknowledgement.
+            return;
+        };
+        self.pending = None;
+        let result = match response.result::<proto::Search>() {
+            Ok(result) => result,
+            Err(e) if e.code == code::CANCELLED => return,
+            Err(e) => {
+                self.status = format!("{} couldn't search: {}", self.node.name, e.message);
+                return;
+            }
+        };
+        if self.game.moves().len() != pending.ply {
+            return;
+        }
+        let position = self.game.position().clone();
+        let Some(mv) = result
+            .best_move
+            .as_deref()
+            .and_then(|text| position.parse_uci_move(text))
+        else {
+            self.status = format!("{} found no move to play.", self.node.name);
+            return;
+        };
+        let score = result
+            .score
+            .map(|score| white_view(score, position.side_to_move()));
+        if let Some(score) = score {
+            self.thinking = Some(Thinking {
+                depth: result.depth,
+                sel_depth: result.sel_depth,
+                score,
+                nodes: result.nodes,
+                nps: (result.time_ms > 0).then(|| result.nodes * 1000 / result.time_ms),
+                time_ms: result.time_ms,
+                pv: rules::line_to_san(&position, &result.pv),
+            });
+        }
+        // A PGN comment with the score and depth, as engines' games usually have (`+0.35/18`).
+        let comment = score.map(|score| format!("{}/{}", score_text(score), result.depth));
+        let san = position.to_san(mv);
+        if self.game.play_with_comment(mv, comment).is_ok() {
+            self.status = format!("{} played {san}.", self.node.name);
+            self.after_move(engine);
+        }
+    }
+}
+
+/// A score from the side to move's point of view, turned to White's.
+pub fn white_view(score: Score, side_to_move: Color) -> Score {
+    if side_to_move == Color::White {
+        return score;
+    }
+    let value = match score.value {
+        ScoreValue::Centipawns(cp) => ScoreValue::Centipawns(-cp),
+        ScoreValue::Mate(n) => ScoreValue::Mate(-n),
+    };
+    let bound = match score.bound {
+        proto::Bound::Lower => proto::Bound::Upper,
+        proto::Bound::Upper => proto::Bound::Lower,
+        proto::Bound::Exact => proto::Bound::Exact,
+    };
+    Score { value, bound }
+}
+
+/// A score as people write it: `+0.35`, `-1.20`, `#3` (White mates in 3), `-#2`.
+pub fn score_text(score: Score) -> String {
+    match score.value {
+        ScoreValue::Centipawns(cp) => format!("{:+.2}", f64::from(cp) / 100.0),
+        ScoreValue::Mate(n) if n >= 0 => format!("#{n}"),
+        ScoreValue::Mate(n) => format!("-#{}", -n),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cnp::engine::{Progress, SearchResult};
+
+    /// Records what the app asks of the engine.
+    #[derive(Default)]
+    struct FakeEngine {
+        searches: Vec<SearchParams>,
+        stops: Vec<i64>,
+    }
+
+    impl Engine for FakeEngine {
+        fn search(&mut self, params: &SearchParams) -> Result<i64, String> {
+            self.searches.push(params.clone());
+            Ok(100 + self.searches.len() as i64)
+        }
+        fn stop(&mut self, id: i64) -> Result<(), String> {
+            self.stops.push(id);
+            Ok(())
+        }
+    }
+
+    fn node() -> NodeSummary {
+        NodeSummary {
+            name: "eng".into(),
+            version: "1".into(),
+            license: "MIT".into(),
+            caps: EngineCapabilities {
+                progress: true,
+                strength: true,
+                ..EngineCapabilities::default()
+            },
+        }
+    }
+
+    fn app() -> App {
+        App::new(node(), Settings::default()).unwrap()
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::from(KeyCode::Char(c))
+    }
+
+    fn type_line(app: &mut App, engine: &mut FakeEngine, text: &str) {
+        for c in text.chars() {
+            app.handle_key(key(c), engine);
+        }
+        app.handle_key(KeyEvent::from(KeyCode::Enter), engine);
+    }
+
+    fn answer(id: i64, best: &str) -> NodeEvent {
+        NodeEvent::Response(Response::ok::<proto::Search>(
+            id.into(),
+            &serde_json::from_value::<SearchResult>(serde_json::json!({
+                "bestMove": best, "score": {"cp": -30}, "pv": [best],
+                "depth": 9, "selDepth": 12, "nodes": 1000, "timeMs": 10, "stopped": false
+            }))
+            .unwrap(),
+        ))
+    }
+
+    fn sq(name: &str) -> Square {
+        name.parse().unwrap()
+    }
+
+    #[test]
+    fn a_typed_move_starts_the_engine_and_its_answer_is_played() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        assert_eq!(engine.searches.len(), 1);
+        let params = &engine.searches[0];
+        assert_eq!(params.position.moves, ["e2e4"]);
+        assert_eq!(params.limits.time_ms, Some(DEFAULT_MOVETIME_MS));
+        assert_eq!(params.progress_ms, Some(PROGRESS_MS));
+        assert!(app.searching());
+
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        assert!(!app.searching());
+        let sans: Vec<&str> = app.game.moves().iter().map(|m| m.san.as_str()).collect();
+        assert_eq!(sans, ["e4", "e5"]);
+        // Black's -0.30 is White's +0.30, and goes into the PGN comment.
+        assert_eq!(app.game.moves()[1].comment.as_deref(), Some("+0.30/9"));
+    }
+
+    #[test]
+    fn clicks_pick_up_and_put_down() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        app.handle_click(sq("g1"), &mut engine);
+        assert_eq!(app.selected, Some(sq("g1")));
+        assert_eq!(app.targets().len(), 2);
+        app.handle_click(sq("f3"), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "Nf3");
+        assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn clicking_the_opponents_piece_picks_nothing_up() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        app.handle_click(sq("e7"), &mut engine);
+        assert_eq!(app.selected, None);
+    }
+
+    #[test]
+    fn the_person_cant_move_for_the_engine() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        type_line(&mut app, &mut engine, "e5");
+        assert_eq!(app.game.moves().len(), 1);
+        assert!(app.status.contains("eng's move"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_takeback_during_a_search_makes_its_answer_stale() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(engine.stops, [101]);
+        assert_eq!(app.game.moves().len(), 0);
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        assert_eq!(app.game.moves().len(), 0);
+    }
+
+    #[test]
+    fn undo_takes_back_the_engines_reply_too() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(app.game.moves().len(), 0);
+        assert!(!app.searching());
+    }
+
+    #[test]
+    fn an_engine_playing_white_opens_the_game() {
+        let mut engine = FakeEngine::default();
+        let settings = Settings {
+            engine_plays: [true, false],
+            ..Settings::default()
+        };
+        let mut app = App::new(node(), settings).unwrap();
+        assert!(engine.searches.is_empty());
+        app.start(&mut engine);
+        assert_eq!(engine.searches.len(), 1);
+        app.handle_node(answer(101, "d2d4"), &mut engine);
+        assert_eq!(app.game.moves()[0].san, "d4");
+        assert!(!app.searching(), "then it's the person's turn");
+    }
+
+    #[test]
+    fn the_engine_can_play_white() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":play white");
+        assert_eq!(engine.searches.len(), 1);
+        assert!(engine.searches[0].position.moves.is_empty());
+    }
+
+    #[test]
+    fn levels_go_to_the_engine_only_when_it_has_them() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":level 5");
+        type_line(&mut app, &mut engine, "d4");
+        let strength = engine.searches[0].strength.clone().unwrap();
+        assert_eq!(strength.level, Some(5.0));
+
+        let mut weak = node();
+        weak.caps = EngineCapabilities::default();
+        let mut app = App::new(weak, Settings::default()).unwrap();
+        type_line(&mut app, &mut engine, ":level 5");
+        assert!(app.status.contains("no playing levels"));
+        assert_eq!(app.settings.level, None);
+    }
+
+    #[test]
+    fn progress_shows_the_line_in_san_from_whites_view() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        let progress = Progress {
+            id: 101.into(),
+            depth: 5,
+            sel_depth: 8,
+            score: Score::cp(25),
+            pv: vec!["e7e5".into(), "g1f3".into()],
+            multipv: None,
+            nodes: 5000,
+            nps: Some(100_000),
+            time_ms: 50,
+            hash_full: None,
+            tb_hits: None,
+        };
+        app.handle_node(NodeEvent::Progress(progress), &mut engine);
+        let thinking = app.thinking.clone().unwrap();
+        assert_eq!(thinking.pv, ["e5", "Nf3"]);
+        assert_eq!(score_text(thinking.score), "-0.25");
+    }
+
+    #[test]
+    fn a_bad_move_says_why() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e5");
+        assert!(app.status.starts_with("Can't play `e5`"), "{}", app.status);
+        assert!(engine.searches.is_empty());
+    }
+
+    #[test]
+    fn a_new_game_from_a_fen_tells_the_engine_its_a_new_game() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":fen 4k3/8/8/8/8/8/8/4K2R b K - 0 1");
+        assert_eq!(engine.searches.len(), 1);
+        let params = &engine.searches[0];
+        assert_eq!(params.position.fen, "4k3/8/8/8/8/8/8/4K2R b K - 0 1");
+        assert_eq!(params.game.as_deref(), Some("cbtui-2"));
+    }
+
+    #[test]
+    fn scores_read_as_people_write_them() {
+        assert_eq!(score_text(Score::cp(35)), "+0.35");
+        assert_eq!(score_text(Score::cp(-120)), "-1.20");
+        assert_eq!(score_text(Score::mate(3)), "#3");
+        assert_eq!(score_text(Score::mate(-2)), "-#2");
+        assert_eq!(score_text(white_view(Score::mate(2), Color::Black)), "-#2");
+    }
+
+    #[test]
+    fn saves_a_pgn() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer(101, "c7c5"), &mut engine);
+        let dir = std::env::temp_dir().join(format!("cbtui-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("game.pgn");
+        app.command(&format!("pgn {}", path.display()), &mut engine);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[Black \"eng 1\"]"), "{text}");
+        assert!(text.contains("1. e4 c5"), "{text}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

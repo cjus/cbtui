@@ -1,0 +1,68 @@
+# Checks every pull request, drafts included, and main every night. Run it on any branch by
+# hand with `gh workflow run ci.yml --ref <branch>`.
+#
+# The one job, `CI`, is the check main's ruleset requires before a PR merges. The steps are the
+# same as scripts/check.sh's: change both together.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # 05:41 UTC, off the hour, when Actions is least busy.
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The real-engine tests run against cb2026 built at the chessengine commit Cargo.toml
+      # pins for the rules crate, so the engine and the rules always match. Cached by commit.
+      - name: Find the pinned cb2026 commit
+        id: engine
+        run: echo "rev=$(grep -o 'chessengine", rev = "[0-9a-f]*' Cargo.toml | grep -o '[0-9a-f]\{40\}')" >> "$GITHUB_OUTPUT"
+      - name: Cache cb2026
+        id: engine-cache
+        uses: actions/cache@v4
+        with:
+          path: cb2026-engine
+          key: cb2026-${{ steps.engine.outputs.rev }}-${{ runner.os }}
+      - name: Build cb2026
+        if: steps.engine-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/cjus/chessengine --rev "${{ steps.engine.outputs.rev }}" cb2026 --root cb2026-engine
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+        env:
+          CBTUI_TEST_ENGINE: ${{ github.workspace }}/cb2026-engine/bin/cb2026
+      - name: Docs
+        run: cargo doc --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Licences and advisories
+        run: cargo deny check
