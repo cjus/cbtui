@@ -13,10 +13,14 @@ changes the picture.
   the Cburnett pictures, filling square squares, and the board fills its panel; elsewhere and
   in tmux they are two letters (`WK`). Checked in Ghostty by Carlos (2026-11-24, the README's
   screenshot); kitty, iTerm2 and WezTerm not tried yet.
+- **Zoom: built** (fourth PR). `z` or `:zoom` gives the board the whole screen but the
+  status line, which then ends with the last move, whose move it is and the engine's score.
+  Letter pieces now grow past 7×3, up to 13×6, in either mode. A wide terminal is held back
+  by its height, so zoom gains most in narrow or tall ones. Tried in tmux (2026-11-24).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 37 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 42 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -33,6 +37,9 @@ Bump the chessengine and cnp pins together, to a chessengine `main` commit and t
 that chessengine pins there.
 
 ## Next
+
+Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
+root-move restriction, depth limits): Carlos to decide in #4.
 
 M2 (`docs/PRD.md`): clocks with increment, resign and draw offers, PGN load, a promotion
 picker, stepping through the move list.

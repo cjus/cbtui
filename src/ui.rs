@@ -16,9 +16,18 @@
 //! same two functions place the mouse ([`square_at`]), so a click always lands on the square
 //! drawn under it.
 //!
+//! Zoomed ([`App::zoomed`], the `z` key), the board has the whole screen but the status line:
+//! no side panels, no keys line and no frame, and the board is centred. The status line then
+//! ends with a short summary (whose move, the engine's score) in place of the panels.
+//!
 //! Squares grow with the terminal. With pictures for pieces ([`crate::pieces`]) a square is as
 //! wide as it is tall in pixels, as big as the panel allows. With letters or symbols, which
-//! are a cell each whatever the square, squares are 7×3 cells, 5×2 or 3×1, whichever fits.
+//! are a cell each whatever the square, squares come in fixed sizes, from 13×6 cells down to
+//! 3×1, the largest that fits.
+//!
+//! Pitfall: a board is usually limited by the terminal's height, not its width, so zooming a
+//! wide terminal gains only the rows the frame and keys line took. It gains most in narrow or
+//! tall ones, where the side panels' width was what held the board back.
 //!
 //! Colour: 24-bit when the terminal says it has it (`COLORTERM=truecolor`), or when it shows
 //! pictures, else the nearest of the 256 standard colours ([`Palette`]).
@@ -43,18 +52,27 @@ pub const MIN_WIDTH: u16 = 8 * 3 + 5 + SIDE_MIN_WIDTH;
 /// The smallest terminal cbtui draws in.
 pub const MIN_HEIGHT: u16 = 8 + 3 + 2;
 
-/// Square sizes, largest first: (width, height) in cells. Cells are about twice as tall as
-/// they are wide, so a square is about twice as wide as it is tall.
-const SQUARE_SIZES: [(u16, u16); 3] = [(7, 3), (5, 2), (3, 1)];
+/// Square sizes for text pieces, largest first: (width, height) in cells. Cells are about
+/// twice as tall as they are wide, so a square is about twice as wide as it is tall.
+const SQUARE_SIZES: [(u16, u16); 6] = [(13, 6), (11, 5), (9, 4), (7, 3), (5, 2), (3, 1)];
+
+/// The columns the rank labels take, left of the squares.
+const RANK_LABEL_COLUMNS: u16 = 2;
+
+/// The columns a board needs besides its squares: the rank labels and one spare.
+const BOARD_MARGIN_COLUMNS: u16 = RANK_LABEL_COLUMNS + 1;
 
 /// The tallest square, in cells, when pieces are pictures and squares grow to fill the panel.
 const MAX_SQUARE_ROWS: u16 = 16;
 
-/// Where the parts of the screen go.
+/// Where the parts of the screen go. Zoomed, the side panels and the keys line are empty
+/// rectangles and the board has no frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Panels {
-    /// The board's frame.
+    /// The board's frame (the same as `squares` when zoomed, which has no frame).
     pub board: Rect,
+    /// Where the squares and their labels go: inside the board's frame.
+    pub squares: Rect,
     /// The engine and players.
     pub info: Rect,
     /// The move list.
@@ -84,8 +102,8 @@ pub struct BoardGeometry {
 /// cell's height over its width when squares should be square in pixels (pictures), or
 /// `None` for the fixed sizes text pieces use.
 fn square_size(width: u16, height: u16, aspect: Option<f32>) -> (u16, u16) {
-    let fits = |&(w, h): &(u16, u16)| 8 * w + 3 <= width && 8 * h < height;
-    let smallest = SQUARE_SIZES[2];
+    let fits = |&(w, h): &(u16, u16)| 8 * w + BOARD_MARGIN_COLUMNS <= width && 8 * h < height;
+    let smallest = SQUARE_SIZES[SQUARE_SIZES.len() - 1];
     match aspect {
         None => SQUARE_SIZES.into_iter().find(fits).unwrap_or(smallest),
         Some(aspect) => (1..=MAX_SQUARE_ROWS)
@@ -97,8 +115,23 @@ fn square_size(width: u16, height: u16, aspect: Option<f32>) -> (u16, u16) {
 }
 
 /// Where the parts of the screen go in `area`. `aspect` is a cell's height over its width
-/// when pieces are pictures, else `None`.
-pub fn layout(area: Rect, aspect: Option<f32>) -> Panels {
+/// when pieces are pictures, else `None`. `zoomed` gives the board everything but the status
+/// line.
+pub fn layout(area: Rect, aspect: Option<f32>, zoomed: bool) -> Panels {
+    if zoomed {
+        let [board, status] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        let none = Rect::new(area.x, area.y, 0, 0);
+        return Panels {
+            board,
+            squares: board,
+            info: none,
+            moves: none,
+            engine: none,
+            status,
+            keys: none,
+        };
+    }
     let [main, status, keys] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(1),
@@ -111,7 +144,7 @@ pub fn layout(area: Rect, aspect: Option<f32>) -> Panels {
         main.height.saturating_sub(2),
         aspect,
     );
-    let board_width = 8 * w + 3 + 2;
+    let board_width = 8 * w + BOARD_MARGIN_COLUMNS + 2;
     let [board, side] =
         Layout::horizontal([Constraint::Length(board_width), Constraint::Min(0)]).areas(main);
     let [info, moves, engine] = Layout::vertical([
@@ -122,6 +155,7 @@ pub fn layout(area: Rect, aspect: Option<f32>) -> Panels {
     .areas(side);
     Panels {
         board,
+        squares: Block::default().borders(Borders::ALL).inner(board),
         info,
         moves,
         engine,
@@ -130,31 +164,33 @@ pub fn layout(area: Rect, aspect: Option<f32>) -> Panels {
     }
 }
 
-/// Where the squares are in the board's frame `board`. `aspect` is a cell's height over its
-/// width when pieces are pictures, else `None`.
-pub fn board_geometry(board: Rect, aspect: Option<f32>) -> BoardGeometry {
-    let inner = Block::default().borders(Borders::ALL).inner(board);
-    let (width, height) = square_size(inner.width, inner.height, aspect);
-    // Rank labels take the first two columns; centre the rest vertically.
-    let used = 8 * height + 1;
+/// Where the squares are in `squares` ([`Panels::squares`]). `aspect` is a cell's height
+/// over its width when pieces are pictures, else `None`.
+pub fn board_geometry(squares: Rect, aspect: Option<f32>) -> BoardGeometry {
+    let (width, height) = square_size(squares.width, squares.height, aspect);
+    // Rank labels take the first two columns, file labels the row under the squares; centre
+    // what is drawn (it fills the width, and so isn't moved sideways, unless zoomed).
+    let (used_x, used_y) = (RANK_LABEL_COLUMNS + 8 * width, 8 * height + 1);
     BoardGeometry {
-        x: inner.x + 2,
-        y: inner.y + inner.height.saturating_sub(used) / 2,
+        x: squares.x + RANK_LABEL_COLUMNS + squares.width.saturating_sub(used_x) / 2,
+        y: squares.y + squares.height.saturating_sub(used_y) / 2,
         width,
         height,
     }
 }
 
 /// The square drawn at screen column `col` and row `row`, if any. `aspect` is a cell's
-/// height over its width when pieces are pictures, else `None`.
+/// height over its width when pieces are pictures, else `None`; `zoomed` and `flipped` are
+/// [`App::zoomed`] and [`App::flipped`].
 pub fn square_at(
     area: Rect,
     aspect: Option<f32>,
+    zoomed: bool,
     flipped: bool,
     col: u16,
     row: u16,
 ) -> Option<Square> {
-    let g = board_geometry(layout(area, aspect).board, aspect);
+    let g = board_geometry(layout(area, aspect, zoomed).squares, aspect);
     if col < g.x || row < g.y {
         return None;
     }
@@ -242,26 +278,40 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
         frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
         return;
     }
-    let panels = layout(area, pieces.cell_aspect());
-    let block = Block::default().borders(Borders::ALL).title(" Board ");
-    frame.render_widget(block, panels.board);
-    draw_board(frame.buffer_mut(), panels.board, app, palette, pieces);
-    draw_info(frame, panels.info, app);
-    draw_moves(frame, panels.moves, app);
-    draw_engine(frame, panels.engine, app);
-    draw_status(frame, panels.status, app);
-    let keys = "click or arrows: move · type a move · m engine moves · u undo · n new · t flip · : command · ? help · q quit";
-    frame.render_widget(
-        Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
-        panels.keys,
-    );
+    let panels = layout(area, pieces.cell_aspect(), app.zoomed);
+    draw_board(frame.buffer_mut(), panels.squares, app, palette, pieces);
+    if app.zoomed {
+        let summary = zoom_summary(app);
+        let [status, summary_area] = Layout::horizontal([
+            Constraint::Min(0),
+            Constraint::Length(summary.chars().count() as u16),
+        ])
+        .areas(panels.status);
+        draw_status(frame, status, app);
+        frame.render_widget(
+            Paragraph::new(summary).style(Style::default().add_modifier(Modifier::DIM)),
+            summary_area,
+        );
+    } else {
+        let block = Block::default().borders(Borders::ALL).title(" Board ");
+        frame.render_widget(block, panels.board);
+        draw_info(frame, panels.info, app);
+        draw_moves(frame, panels.moves, app);
+        draw_engine(frame, panels.engine, app);
+        draw_status(frame, panels.status, app);
+        let keys = "click or arrows: move · type a move · m engine moves · u undo · n new · t flip · z zoom · : command · ? help · q quit";
+        frame.render_widget(
+            Paragraph::new(keys).style(Style::default().add_modifier(Modifier::DIM)),
+            panels.keys,
+        );
+    }
     if app.show_help {
         draw_help(frame, area);
     }
 }
 
-fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette, pieces: &mut Pieces) {
-    let g = board_geometry(board, pieces.cell_aspect());
+fn draw_board(buf: &mut Buffer, squares: Rect, app: &App, palette: &Palette, pieces: &mut Pieces) {
+    let g = board_geometry(squares, pieces.cell_aspect());
     let position = app.game.position();
     let last = app.game.last_move().map(|played| played.mv);
     let targets = app.targets();
@@ -328,7 +378,7 @@ fn draw_board(buf: &mut Buffer, board: Rect, app: &App, palette: &Palette, piece
         let rank = screen_to_board(0, line, app.flipped).1;
         let label = char::from(b'1' + rank as u8).to_string();
         let y = g.y + line as u16 * g.height + g.height / 2;
-        buf.set_string(g.x - 2, y, label, Style::default());
+        buf.set_string(g.x - RANK_LABEL_COLUMNS, y, label, Style::default());
     }
     for column in 0..8 {
         let file = screen_to_board(column, 0, app.flipped).0;
@@ -453,6 +503,30 @@ fn draw_engine(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// What the zoomed status line ends with, in place of the side panels: the last move, whose
+/// move it is (or how the game ended), and the engine's latest score and depth.
+fn zoom_summary(app: &App) -> String {
+    let mut parts = Vec::new();
+    if let Some((number, white, black)) = app.game.numbered_moves().last() {
+        parts.push(match (white, black) {
+            (_, Some(black)) => format!("{number}… {black}"),
+            (Some(white), None) => format!("{number}. {white}"),
+            (None, None) => String::new(),
+        });
+    }
+    parts.push(match app.game.outcome() {
+        Some(outcome) => rules::describe_outcome(outcome),
+        None if app.searching() => format!("{} is thinking…", app.node.name),
+        None => format!("{} to move", app.game.position().side_to_move()),
+    });
+    if let Some(t) = &app.thinking {
+        parts.push(format!("{} d{}", score_text(t.score), t.depth));
+    }
+    parts.push("z panels ".into());
+    parts.retain(|part| !part.is_empty());
+    parts.join(" · ")
+}
+
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     match &app.input {
         Some(input) => {
@@ -478,6 +552,7 @@ Keys
   u        take back your last move
   n        new game
   t        turn the board around
+  z        zoom: the board fills the screen (again for the panels)
   :        type a command
   ?        this help
   q        quit
@@ -488,7 +563,7 @@ Commands
   :time <ms>                    how long it thinks a move
   :fen <FEN>                    a new game from a position
   :pgn <file>                   save the game
-  :new  :undo  :flip  :go  :stop  :quit
+  :new  :undo  :flip  :zoom  :go  :stop  :quit
 
 Press any key to close.";
 
@@ -573,7 +648,10 @@ mod tests {
         let text = screen_with(&app(), 160, 50, &mut pieces);
         // No letters: the pieces are pictures.
         assert!(!text.contains("WK"), "{text}");
-        let g = board_geometry(layout(Rect::new(0, 0, 160, 50), Some(2.0)).board, Some(2.0));
+        let g = board_geometry(
+            layout(Rect::new(0, 0, 160, 50), Some(2.0), false).squares,
+            Some(2.0),
+        );
         // Twice as wide as tall in cells is square in pixels, and bigger than text's 7×3.
         assert_eq!(g.width, 2 * g.height);
         assert!(g.height > 3, "{g:?}");
@@ -595,19 +673,24 @@ mod tests {
             (240, 70),
         ];
         for (width, height) in sizes {
-            for aspect in [None, Some(2.0), Some(2.2)] {
+            for (aspect, zoomed) in [None, Some(2.0), Some(2.2)]
+                .into_iter()
+                .flat_map(|aspect| [(aspect, false), (aspect, true)])
+            {
                 let area = Rect::new(0, 0, width, height);
-                let g = board_geometry(layout(area, aspect).board, aspect);
+                let g = board_geometry(layout(area, aspect, zoomed).squares, aspect);
                 for flipped in [false, true] {
                     // The middle of the bottom-left square is a1, or h8 when flipped.
                     let col = g.x + g.width / 2;
                     let row = g.y + 7 * g.height + g.height / 2;
                     let expected = if flipped { "h8" } else { "a1" };
-                    let square = square_at(area, aspect, flipped, col, row).unwrap();
-                    assert_eq!(square.to_string(), expected, "{width}x{height} {aspect:?}");
-                    // Just off the board is nothing.
-                    let off = square_at(area, aspect, flipped, g.x + 8 * g.width, row);
-                    assert_eq!(off, None);
+                    let at = |col, row| square_at(area, aspect, zoomed, flipped, col, row);
+                    let square = at(col, row).unwrap();
+                    let case = format!("{width}x{height} {aspect:?} zoomed {zoomed}");
+                    assert_eq!(square.to_string(), expected, "{case}");
+                    // Just off the board, either side, is nothing.
+                    assert_eq!(at(g.x + 8 * g.width, row), None, "{case}");
+                    assert_eq!(at(g.x - 1, row), None, "{case}");
                 }
             }
         }
@@ -615,10 +698,49 @@ mod tests {
 
     #[test]
     fn the_board_grows_with_the_terminal() {
-        let geometry = |w, h| board_geometry(layout(Rect::new(0, 0, w, h), None).board, None);
+        let geometry =
+            |w, h| board_geometry(layout(Rect::new(0, 0, w, h), None, false).squares, None);
         let (small, large) = (geometry(MIN_WIDTH, MIN_HEIGHT), geometry(160, 50));
         assert_eq!((small.width, small.height), (3, 1));
-        assert_eq!((large.width, large.height), (7, 3));
+        assert_eq!((large.width, large.height), (11, 5));
+    }
+
+    #[test]
+    fn zoomed_the_board_has_the_screen_and_the_panels_go() {
+        let mut app = app();
+        app.zoomed = true;
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("WK") && text.contains("BP"), "{text}");
+        assert!(
+            !text.contains("Moves") && !text.contains("Licence"),
+            "{text}"
+        );
+        assert!(!text.contains("q quit"), "{text}");
+        // The status line keeps the message and ends with the summary.
+        let status = text.lines().last().unwrap();
+        assert!(status.starts_with("Connected to eng 1.2"), "{status}");
+        assert!(
+            status.trim_end().ends_with("White to move · z panels"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn zooming_a_narrow_terminal_makes_the_board_bigger_and_centres_it() {
+        let size = |zoomed, aspect| {
+            let area = Rect::new(0, 0, 100, 60);
+            board_geometry(layout(area, aspect, zoomed).squares, aspect)
+        };
+        for aspect in [None, Some(2.0)] {
+            let (panels, zoomed) = (size(false, aspect), size(true, aspect));
+            assert!(
+                zoomed.height > panels.height,
+                "{aspect:?}: {panels:?} {zoomed:?}"
+            );
+            // Centred: as much room left of the labels as right of the board.
+            let right = 100 - (zoomed.x + 8 * zoomed.width);
+            assert!((zoomed.x - 2).abs_diff(right) <= 1, "{zoomed:?}");
+        }
     }
 
     #[test]

@@ -133,6 +133,8 @@ pub struct App {
     pub levels: Option<LevelsResult>,
     /// Whether Black is at the bottom of the board.
     pub flipped: bool,
+    /// Whether the board fills the screen, without the side panels (the `z` key).
+    pub zoomed: bool,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -177,6 +179,7 @@ impl App {
             node,
             levels: None,
             flipped: false,
+            zoomed: false,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -267,6 +270,7 @@ impl App {
             KeyCode::Char('n') => self.new_game(None, engine),
             KeyCode::Char('u') => self.undo(engine),
             KeyCode::Char('t') => self.flipped = !self.flipped,
+            KeyCode::Char('z') => self.zoomed = !self.zoomed,
             // `m`: the engine moves (now, if it is thinking already).
             KeyCode::Char('m') if self.searching() => self.move_now(engine),
             KeyCode::Char('m') => self.go(engine),
@@ -404,6 +408,7 @@ impl App {
             ("new", _) => self.new_game(None, engine),
             ("fen", fen) if !fen.is_empty() => self.new_game(Some(fen.join(" ")), engine),
             ("flip", _) => self.flipped = !self.flipped,
+            ("zoom", _) => self.zoomed = !self.zoomed,
             ("undo", _) => self.undo(engine),
             ("go", _) => self.go(engine),
             ("stop", _) => self.move_now(engine),
@@ -825,6 +830,20 @@ mod tests {
         assert_eq!(sans, ["e4", "e5"]);
         // Black's -0.30 is White's +0.30, and goes into the PGN comment.
         assert_eq!(app.game.moves()[1].comment.as_deref(), Some("+0.30/9"));
+    }
+
+    #[test]
+    fn z_and_zoom_toggle_the_zoomed_board() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        app.handle_key(key('z'), &mut engine);
+        assert!(app.zoomed);
+        type_line(&mut app, &mut engine, ":zoom");
+        assert!(!app.zoomed);
+        // While a line is being typed, `z` is a letter in it.
+        app.handle_key(key(':'), &mut engine);
+        app.handle_key(key('z'), &mut engine);
+        assert!(!app.zoomed);
+        assert_eq!(app.input.as_deref(), Some(":z"));
     }
 
     #[test]

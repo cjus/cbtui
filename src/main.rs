@@ -186,8 +186,14 @@ fn handle(event: Event, app: &mut App, node: &mut Node, area: Rect, aspect: Opti
         Event::Term(TermEvent::Mouse(mouse)) => {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                 && !app.show_help
-                && let Some(square) =
-                    ui::square_at(area, aspect, app.flipped, mouse.column, mouse.row)
+                && let Some(square) = ui::square_at(
+                    area,
+                    aspect,
+                    app.zoomed,
+                    app.flipped,
+                    mouse.column,
+                    mouse.row,
+                )
             {
                 app.handle_click(square, node);
             }
