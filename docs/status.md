@@ -70,10 +70,15 @@ changes the picture.
   draw only from move 30, and accepts only when it is clearly worse (-0.50 or less for
   itself) or being mated; declining early, it says so. Tried in tmux with cb2026
   (2026-11-25): declined after 1. e4, accepted at move 40 a queen down.
+- **Help scrolls** (fifteenth PR). When the help doesn't fit the terminal, ↑ ↓, Page Up,
+  Page Down, Home, End and the mouse wheel scroll it, and its bottom edge says which lines
+  show ("1–22 of 45"); any other key closes it. Lines wrap in a terminal narrower than the
+  box, and a test keeps every help line within the box at full width. The text moved to
+  `src/help.rs`. Tried in tmux at 80×24 (2026-11-25).
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 102 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 107 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 4 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).

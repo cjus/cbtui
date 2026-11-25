@@ -60,9 +60,11 @@ use cnp::engine::{
 };
 use cnp::{Response, code};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::Rect;
 
 use crate::analysis::{Analysis, DEFAULT_LINES, MAX_LINES};
 use crate::clock::{Clocks, TimeControl};
+use crate::help::HelpView;
 use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
 use crate::root::RootView;
@@ -90,6 +92,9 @@ pub const MAX_MOVETIME_MS: u64 = 600_000;
 /// What cbtui says when asked to use an engine it doesn't have.
 const NO_ENGINE: &str =
     "There's no engine. Start cbtui with --engine <path> (or $CBTUI_ENGINE) to play one.";
+
+/// The screen size the help assumes until the event loop says the real one.
+const DEFAULT_SCREEN: (u16, u16) = (80, 24);
 
 /// How far Page Up and Page Down move in the techniques.
 const TECHNIQUES_PAGE: usize = 10;
@@ -313,6 +318,11 @@ pub struct App {
     pub thinking: Option<Thinking>,
     /// Whether the help is showing.
     pub show_help: bool,
+    /// How many lines the help is scrolled down.
+    pub help_scroll: usize,
+    /// The screen's size when it was last drawn, as the event loop says: what the help
+    /// scrolls against.
+    pub screen: Rect,
     /// The engine's recent stderr lines, oldest first.
     pub stderr: Vec<String>,
     /// Whether the engine has gone.
@@ -374,6 +384,8 @@ impl App {
             status,
             thinking: None,
             show_help: false,
+            help_scroll: 0,
+            screen: Rect::new(0, 0, DEFAULT_SCREEN.0, DEFAULT_SCREEN.1),
             stderr: Vec::new(),
             disconnected: false,
             quit: false,
@@ -694,7 +706,7 @@ impl App {
             return;
         }
         if self.show_help {
-            self.show_help = false;
+            self.help_key(key.code);
             return;
         }
         if let Some(overlay) = self.overlay {
@@ -719,7 +731,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char(':') => self.input = Some(":".into()),
             KeyCode::Char('n') => self.new_game(None, engine),
             KeyCode::Char('u') => self.undo(engine),
@@ -930,6 +942,39 @@ impl App {
             }
             Err(e) => self.status = e,
         }
+    }
+
+    /// Shows the help, from its top.
+    fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_scroll = 0;
+    }
+
+    /// The help's keys: ↑ ↓ (or `k` `j`) a line, Page Up and Page Down (or `b`, Space, `f`) a
+    /// page, Home and End (or `g`, `G`) the top and bottom; any other key closes it.
+    fn help_key(&mut self, code: KeyCode) {
+        let view = HelpView::new(self.screen, self);
+        let page = view.rows.max(1) as isize;
+        let by = match code {
+            KeyCode::Up | KeyCode::Char('k') => -1,
+            KeyCode::Down | KeyCode::Char('j') => 1,
+            KeyCode::PageUp | KeyCode::Char('b') => -page,
+            KeyCode::PageDown | KeyCode::Char(' ' | 'f') => page,
+            KeyCode::Home | KeyCode::Char('g') => isize::MIN,
+            KeyCode::End | KeyCode::Char('G') => isize::MAX,
+            _ => {
+                self.show_help = false;
+                return;
+            }
+        };
+        self.scroll_help(by);
+    }
+
+    /// Scrolls the help `by` lines (up is negative), within what the screen leaves hidden.
+    pub fn scroll_help(&mut self, by: isize) {
+        let max = HelpView::new(self.screen, self).max_scroll();
+        let at = self.help_scroll.min(max);
+        self.help_scroll = at.saturating_add_signed(by).min(max);
     }
 
     /// The promotion picker's keys: a piece's letter (`q`, `r`, `b`, `n`), Enter or Space for a
@@ -1172,7 +1217,7 @@ impl App {
         let name = words.next().unwrap_or("");
         let rest: Vec<&str> = words.collect();
         match (name, rest.as_slice()) {
-            ("" | "help" | "h", _) => self.show_help = true,
+            ("" | "help" | "h", _) => self.open_help(),
             ("q" | "quit" | "exit", _) => self.quit = true,
             ("new", _) => self.new_game(None, engine),
             ("fen", fen) if !fen.is_empty() => self.new_game(Some(fen.join(" ")), engine),
@@ -2816,6 +2861,42 @@ mod tests {
         type_line(&mut app, &mut engine, ":tree");
         assert!(engine.trees.is_empty());
         assert!(app.status.contains("can't record"), "{}", app.status);
+    }
+
+    #[test]
+    fn the_help_scrolls_within_what_the_screen_hides_and_other_keys_close_it() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        app.screen = Rect::new(0, 0, 80, 20);
+        let max = HelpView::new(app.screen, &app).max_scroll();
+        assert!(max > 0, "the help doesn't fit 20 rows");
+        app.handle_key(key('?'), &mut engine);
+        press(&mut app, &mut engine, KeyCode::Down);
+        press(&mut app, &mut engine, KeyCode::Down);
+        assert_eq!(app.help_scroll, 2);
+        press(&mut app, &mut engine, KeyCode::Up);
+        assert_eq!(app.help_scroll, 1);
+        press(&mut app, &mut engine, KeyCode::PageDown);
+        assert_eq!(
+            app.help_scroll,
+            (1 + 18).min(max),
+            "a page is the box's 18 rows"
+        );
+        press(&mut app, &mut engine, KeyCode::End);
+        assert_eq!(app.help_scroll, max);
+        press(&mut app, &mut engine, KeyCode::Down);
+        assert_eq!(app.help_scroll, max, "never past the end");
+        app.scroll_help(-3);
+        assert_eq!(app.help_scroll, max - 3);
+        press(&mut app, &mut engine, KeyCode::Home);
+        assert_eq!(app.help_scroll, 0);
+        assert!(app.show_help);
+        // `q` closes the help; it doesn't quit.
+        app.handle_key(key('q'), &mut engine);
+        assert!(!app.show_help && !app.quit);
+        // It opens at the top again.
+        app.help_scroll = 5;
+        type_line(&mut app, &mut engine, ":help");
+        assert_eq!(app.help_scroll, 0);
     }
 
     #[test]

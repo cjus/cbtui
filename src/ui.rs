@@ -52,6 +52,7 @@ use ratatui_image::Image;
 use crate::analysis::Analysis;
 use crate::app::{App, Overlay, score_text, white_view};
 use crate::clock::clock_text;
+use crate::help::HelpView;
 use crate::pieces::{self, Pieces};
 use crate::review::Review;
 use crate::rules::{self, Color, Position, Square};
@@ -1365,73 +1366,30 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// The help screen's text.
-pub const HELP: &str = "\
-Moves
-  Click a piece, then its square. Or use the arrows and Enter.
-  Or type a move: e4, Nf3, exd5, O-O, e8=N, or e2e4. Enter plays it.
-  A pawn on the last rank offers Q R B N there: click one, or press
-  q, r, b or n (Enter: queen, Esc: put it back).
-
-Keys
-  m        the engine moves (now, if it is thinking)
-  u        take back your last move
-  n        new game
-  [ ]      look back through the game a move at a time (Home, End)
-  t        turn the board around
-  z        zoom: the board fills the screen (again for the panels)
-  i        analyse: the engine studies the board until i again; you
-           move for both sides, and in the PGN viewer it follows you
-  v        the engine's evaluation of the board, term by term
-  w        follow the search at its root: the move it's on, the effort
-           each root move has had, what it goes back over (w again)
-  :        type a command
-  ?        this help
-  q        quit
-
-PGN viewer (cbtui --pgn <file>)
-  ← →      a move back or on (also [ ])
-  ↑ ↓      the start of the game, the end of the line (also Home, End)
-  1-9      into a variation that starts at this move
-  :play white|black|both|none   play on from the position shown
-
-Commands
-  :play white|black|both|none   which sides the engine plays
-  :level <n>|max                the engine's playing level
-  :lines <n>                    how many lines an analysis shows
-  :techniques                   switch the engine's search techniques
-  :tree [depth]                 search the board and walk the search's tree
-  :time <ms>                    how long it thinks a move
-  :clock <min>+<sec>|off        play to a clock (5+3), from the first move
-  :resign  :draw                resign, or offer the engine a draw
-  :fen <FEN>                    a new game from a position
-  :pgn <file>                   save the game
-  :new  :undo  :flip  :zoom  :go  :stop  :quit
-
-Press any key to close.";
-
-/// The help screen: which engine it is (its whole version, and its licence), then [`HELP`].
+/// The help screen, over everything: the part of [`crate::help`]'s text that fits, from
+/// [`App::help_scroll`], with where it is and how to scroll on the bottom edge when it doesn't
+/// all fit.
 fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
-    let engine = if app.has_engine {
-        format!(
-            "Engine\n  {} {}, licence {}\n\n",
-            app.node.name, app.node.version, app.node.license
-        )
-    } else {
-        "Engine\n  None: start cbtui with --engine <path> to play one.\n\n".to_string()
-    };
-    let text = engine + HELP;
-    let width = 70.min(area.width);
-    let height = (text.lines().count() as u16 + 2).min(area.height);
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(Clear, rect);
-    let block = Block::default().borders(Borders::ALL).title(" Help ");
-    frame.render_widget(Paragraph::new(text).block(block), rect);
+    let view = HelpView::new(area, app);
+    let scroll = app.help_scroll.min(view.max_scroll());
+    let shown: Vec<Line> = view
+        .lines
+        .iter()
+        .skip(scroll)
+        .take(view.rows)
+        .map(|line| Line::from(line.as_str()))
+        .collect();
+    frame.render_widget(Clear, view.rect);
+    let mut block = Block::default().borders(Borders::ALL).title(" Help ");
+    if view.max_scroll() > 0 {
+        let last = (scroll + view.rows).min(view.lines.len());
+        block = block.title_bottom(format!(
+            " {}–{last} of {} · ↑ ↓ PgUp PgDn scroll · Esc closes ",
+            scroll + 1,
+            view.lines.len()
+        ));
+    }
+    frame.render_widget(Paragraph::new(shown).block(block), view.rect);
 }
 
 #[cfg(test)]
@@ -1831,6 +1789,34 @@ mod tests {
             text.contains("eng 1.0.0+f41bbcc85c7a, licence MIT"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_short_terminal_scrolls_the_help_and_says_where_it_is() {
+        let mut app = app();
+        app.show_help = true;
+        let all = crate::help::HelpView::new(Rect::new(0, 0, 100, 200), &app).lines;
+        let text = screen(&app, 80, 24);
+        assert!(text.contains("Engine"), "{text}");
+        assert!(text.contains(&format!("1–22 of {}", all.len())), "{text}");
+        assert!(text.contains("PgUp PgDn scroll"), "{text}");
+        assert!(
+            !text.contains("any other key closes"),
+            "the end is below: {text}"
+        );
+        // Scrolled to the end, the last line shows and the first doesn't.
+        app.screen = Rect::new(0, 0, 80, 24);
+        app.scroll_help(isize::MAX);
+        let text = screen(&app, 80, 24);
+        assert!(text.contains("any other key closes"), "{text}");
+        assert!(!text.contains("Engine"), "{text}");
+        // A tall terminal shows it all, with no scroll note.
+        let text = screen(&app, 100, 80);
+        assert!(
+            text.contains("Engine") && text.contains("any other key closes"),
+            "{text}"
+        );
+        assert!(!text.contains("PgUp PgDn scroll"), "{text}");
     }
 
     #[test]

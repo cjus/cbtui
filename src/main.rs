@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use cbtui::app::{App, NodeSummary};
 use cbtui::args::{self, Args, ENGINE_ENV, USAGE};
+use cbtui::help::WHEEL_LINES;
 use cbtui::node::{Engine, NoEngine, Node, NodeEvent};
 use cbtui::pieces::{PieceChoice, Pieces};
 use cbtui::review::Review;
@@ -225,6 +226,8 @@ fn run(
             area = frame.area();
             ui::draw(frame, app, &palette, pieces);
         })?;
+        // The help scrolls against what the screen shows.
+        app.screen = area;
         // While a clock runs, wake up to redraw it (and to see a flag fall) even when
         // nothing happens.
         let first = if app.clock_running() {
@@ -257,9 +260,13 @@ fn handle(event: Event, app: &mut App, node: &mut Option<Node>, area: Rect, aspe
     let node = engine_of(node, &mut none);
     match event {
         Event::Term(TermEvent::Key(key)) => app.handle_key(key, node),
+        Event::Term(TermEvent::Mouse(mouse)) if app.show_help => match mouse.kind {
+            MouseEventKind::ScrollDown => app.scroll_help(WHEEL_LINES),
+            MouseEventKind::ScrollUp => app.scroll_help(-WHEEL_LINES),
+            _ => {}
+        },
         Event::Term(TermEvent::Mouse(mouse)) => {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                && !app.show_help
                 && let Some(square) = ui::square_at(
                     area,
                     aspect,
