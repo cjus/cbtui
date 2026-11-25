@@ -34,6 +34,7 @@ cargo install --locked --git https://github.com/cjus/cbtui
 cbtui                       # you play White against cb2026 on the PATH
 cbtui --play white          # the engine plays White
 cbtui --level 8             # a weaker engine, if it has levels
+cbtui --clock 5+3           # five minutes each, three seconds added a move
 cbtui --engine ~/bin/cb2027 # another CNP engine (or set CBTUI_ENGINE)
 cbtui --help                # every option
 ```
@@ -51,8 +52,14 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 | `[` `]` | look back through the game a move at a time (`Home`, `End`); moves wait until you're back at the end |
 | `t` | turn the board around |
 | `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
-| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:fen <FEN>`, `:pgn <file>` |
+| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
+
+With a clock, the clocks start with the first move and stand beside the players' names. An
+engine that can read a clock (the CNP `clock` capability, as cb2026 can) is sent both and
+decides its own time; one that can't gets a share of its time left each move. `:draw` offers
+the engine a draw, which it answers with its next move: it accepts when its own score says it
+isn't better. `u` takes back a resignation or an agreed draw.
 
 ## View a PGN game
 

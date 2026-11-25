@@ -28,6 +28,20 @@
 //! it; Enter is a queen, and Esc or a click elsewhere puts the pawn back. While it's open it
 //! takes every key, so `q` is a queen there, not quit. A typed move says its piece (`e8=N`).
 //!
+//! ## Clocks, resigning and draws
+//!
+//! With a time control (`--clock 5+3`, `:clock`), [`App::clocks`] runs from the game's first
+//! move. Time reaches the app as an input, [`App::tick`], which the event loop calls with the
+//! time before each batch of events; a clock that reaches zero ends the game there. An engine
+//! with the `clock` capability is sent both clocks and decides its own time; one without it
+//! gets a share of its time left ([`CLOCK_FALLBACK_MOVES`]). A takeback puts both clocks back
+//! to where they were before the moves taken back.
+//!
+//! `:resign` resigns the person's side. `:draw` offers the engine a draw, which it answers
+//! with its next move: it accepts when its search's score says it isn't better
+//! ([`accepts_draw`]), from what it reported, never from cbtui's own judgement. A resignation
+//! or an agreed draw can be taken back (`u`), and the game goes on.
+//!
 //! ## The engine's turn
 //!
 //! After every change, [`App`] checks whether the engine plays the side to move. If so, and no
@@ -36,17 +50,19 @@
 //! is played only if both still match: a takeback or a new game in between makes it stale.
 
 use std::fs;
+use std::time::Instant;
 
 use cnp::engine::{
     self as proto, EngineCapabilities, LevelsResult, Score, ScoreValue, SearchLimits, SearchParams,
-    Strength,
+    SideClock, Strength,
 };
 use cnp::{Response, code};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::clock::{Clocks, TimeControl};
 use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
-use crate::rules::{self, Color, Game, Move, Piece, Position, Square};
+use crate::rules::{self, Color, Game, Move, Outcome, Piece, Position, Square};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
 pub const PROGRESS_MS: u64 = 200;
@@ -64,6 +80,18 @@ const NO_ENGINE: &str =
 /// What the status line says while the promotion picker is open.
 const PROMOTE: &str =
     "Promote to: click a piece, or press q, r, b or n (Enter: queen, Esc: put the pawn back).";
+
+/// An engine that can't read a clock gets this share of its time left for each move: as if
+/// this many moves were still to play.
+pub const CLOCK_FALLBACK_MOVES: u64 = 30;
+
+/// What an engine without a clock keeps in hand on every move, in milliseconds, so the time
+/// it is given never quite uses up its clock.
+pub const CLOCK_SAFETY_MS: u64 = 50;
+
+/// The engine accepts a draw offer when its own score is at most this, in centipawns: when
+/// it doesn't think it's better.
+pub const DRAW_ACCEPT_CP: i32 = 10;
 
 /// How many lines of the engine's stderr are kept.
 const STDERR_LINES: usize = 50;
@@ -112,6 +140,8 @@ pub struct Settings {
     pub level: Option<f64>,
     /// The position to start from, if not the usual one.
     pub fen: Option<String>,
+    /// The time control, if games are played to a clock.
+    pub clock: Option<TimeControl>,
 }
 
 impl Default for Settings {
@@ -121,6 +151,7 @@ impl Default for Settings {
             movetime_ms: DEFAULT_MOVETIME_MS,
             level: None,
             fen: None,
+            clock: None,
         }
     }
 }
@@ -184,6 +215,12 @@ pub struct App {
     pub browse: Option<usize>,
     /// Whether there is an engine at all: a PGN viewer starts without one if none is found.
     pub has_engine: bool,
+    /// The game's clocks, when it is played to a time control.
+    pub clocks: Option<Clocks>,
+    /// The time, as the event loop last said ([`App::tick`]).
+    pub now: Instant,
+    /// Whether the person has offered the engine a draw it hasn't answered yet.
+    pub draw_offered: bool,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -211,6 +248,8 @@ pub struct App {
     levels_request: Option<i64>,
     /// Counts games, to tell the engine when a new one starts (the `game` hint).
     game_number: u32,
+    /// With clocks: both sides' time before each move of the game, to put back on a takeback.
+    clock_history: Vec<[u64; 2]>,
 }
 
 impl App {
@@ -224,6 +263,7 @@ impl App {
             "Connected to {} {}. Press ? for help.",
             node.name, node.version
         );
+        let clocks = settings.clock.map(Clocks::new);
         Ok(App {
             game,
             settings,
@@ -234,6 +274,9 @@ impl App {
             review: None,
             browse: None,
             has_engine: true,
+            clocks,
+            now: Instant::now(),
+            draw_offered: false,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -248,6 +291,7 @@ impl App {
             pending: None,
             levels_request: None,
             game_number: 1,
+            clock_history: Vec::new(),
         })
     }
 
@@ -265,6 +309,95 @@ impl App {
         self.browse = None;
         self.selected = None;
         self.thinking = None;
+        // The viewer has no clocks; `:play` starts them, if there's a time control.
+        self.clocks = None;
+        self.clock_history.clear();
+    }
+
+    /// Tells the app the time. A clock that reaches zero ends the game on time.
+    pub fn tick(&mut self, now: Instant, engine: &mut dyn Engine) {
+        self.now = now;
+        let Some(side) = self.clocks.as_ref().and_then(|c| c.flagged(now)) else {
+            return;
+        };
+        if self.game.outcome().is_none() {
+            self.game.time_out(side);
+        }
+        self.game_ended(engine);
+    }
+
+    /// Whether a clock is running, so the screen should be redrawn as it counts down.
+    pub fn clock_running(&self) -> bool {
+        self.clocks.as_ref().is_some_and(|c| c.running().is_some())
+    }
+
+    /// New clocks for the game as it stands, from the time control: both at the starting
+    /// time, the side to move's running if the game has begun.
+    fn reset_clocks(&mut self) {
+        self.clocks = self.settings.clock.map(Clocks::new);
+        self.clock_history = match self.settings.clock {
+            Some(tc) => vec![[tc.base_ms; 2]; self.game.moves().len()],
+            None => Vec::new(),
+        };
+        self.resume_clock();
+    }
+
+    /// Runs the side to move's clock if the game has begun and isn't over, else neither.
+    fn resume_clock(&mut self) {
+        let now = self.now;
+        let side = self.game.position().side_to_move();
+        let running = !self.game.moves().is_empty() && self.game.outcome().is_none();
+        if let Some(clocks) = &mut self.clocks {
+            if running {
+                clocks.start(side, now);
+            } else {
+                clocks.stop(now);
+            }
+        }
+    }
+
+    /// Plays `mv` (with a comment for PGN) and presses the clock. False if it can't be played.
+    fn play(&mut self, mv: Move, comment: Option<String>) -> bool {
+        let mover = self.game.position().side_to_move();
+        let before = self.clocks.as_ref().map(|c| c.times(self.now));
+        if self.game.play_with_comment(mv, comment).is_err() {
+            return false;
+        }
+        if let (Some(clocks), Some(before)) = (&mut self.clocks, before) {
+            self.clock_history.push(before);
+            if self.game.outcome().is_some() {
+                clocks.stop(self.now);
+            } else {
+                clocks.press(mover, self.now);
+            }
+        }
+        true
+    }
+
+    /// Takes back one move, and puts the clocks back to where they were before it.
+    fn take_back(&mut self) -> bool {
+        if self.game.undo().is_none() {
+            return false;
+        }
+        if let (Some(clocks), Some(times)) = (&mut self.clocks, self.clock_history.pop()) {
+            clocks.set_times(times);
+        }
+        true
+    }
+
+    /// After a game ends off the board (a resignation, a draw, a flag): the search stops,
+    /// the clocks stop, and the status says how it ended.
+    fn game_ended(&mut self, engine: &mut dyn Engine) {
+        self.cancel_search(engine);
+        if let Some(clocks) = &mut self.clocks {
+            clocks.stop(self.now);
+        }
+        self.promotion = None;
+        self.selected = None;
+        self.draw_offered = false;
+        if let Some(outcome) = self.game.outcome() {
+            self.status = rules::describe_outcome(outcome);
+        }
     }
 
     /// The position on the board: the viewer's, the one looked back at, or the game's.
@@ -675,7 +808,7 @@ impl App {
             self.cancel_search(engine);
         }
         let san = self.game.position().to_san(mv);
-        if self.game.play(mv).is_ok() {
+        if self.play(mv, None) {
             self.selected = None;
             self.status = format!("You played {san}.");
             self.after_move(engine);
@@ -714,6 +847,18 @@ impl App {
                 }
                 _ => self.status = format!("Usage: :time <1-{MAX_MOVETIME_MS}> (milliseconds)"),
             },
+            ("resign", _) => self.resign(engine),
+            ("draw", _) => self.offer_draw(engine),
+            ("clock", [text]) => self.set_clock(text),
+            ("clock", []) => {
+                self.status = match self.settings.clock {
+                    Some(tc) => format!("Playing to a {tc} clock. :clock off for none."),
+                    None => format!(
+                        "No clock: the engine thinks {} ms a move. :clock 5+3 sets one.",
+                        self.settings.movetime_ms
+                    ),
+                }
+            }
             ("pgn", [_]) if self.review.is_some() => {
                 self.status = "This game is already a PGN file.".into();
             }
@@ -749,12 +894,96 @@ impl App {
             self.game_number += 1;
             self.selected = None;
             self.thinking = None;
+            self.reset_clocks();
             status = format!("Playing on from {}. {status}", review.name);
         }
         self.browse = None;
         self.settings.engine_plays = sides;
         self.status = status;
         self.maybe_start_engine(engine);
+    }
+
+    /// Sets the time control (`5+3`), or takes it away (`off`). The game's clocks start
+    /// again from it.
+    fn set_clock(&mut self, text: &str) {
+        if matches!(text, "off" | "none") {
+            self.settings.clock = None;
+            self.clocks = None;
+            self.clock_history.clear();
+            self.status = format!(
+                "No clock now: the engine thinks {} ms a move.",
+                self.settings.movetime_ms
+            );
+            return;
+        }
+        let tc = match TimeControl::parse(text) {
+            Ok(tc) => tc,
+            Err(e) => {
+                self.status = format!("Usage: :clock <minutes>+<seconds>|off ({e})");
+                return;
+            }
+        };
+        self.settings.clock = Some(tc);
+        if self.review.is_none() {
+            self.reset_clocks();
+        }
+        self.status = format!(
+            "Playing to a {tc} clock: each side has {}, plus {} s a move.",
+            crate::clock::clock_text(tc.base_ms),
+            tc.increment_ms as f64 / 1000.0
+        );
+        if self.has_engine && !self.node.caps.clock {
+            self.status.push_str(&format!(
+                " {} can't read a clock, so cbtui gives it a share of its time each move.",
+                self.node.name
+            ));
+        }
+    }
+
+    /// The person resigns: their side if the engine plays the other, else the side to move.
+    fn resign(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
+            self.status = reason;
+            return;
+        }
+        if let Some(outcome) = self.game.outcome() {
+            self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
+            return;
+        }
+        let humans: Vec<Color> = [Color::White, Color::Black]
+            .into_iter()
+            .filter(|c| !self.settings.engine_plays[c.index()])
+            .collect();
+        let loser = match humans.as_slice() {
+            [one] => *one,
+            _ => self.game.position().side_to_move(),
+        };
+        self.game.resign(loser);
+        self.game_ended(engine);
+    }
+
+    /// Offers a draw. Against the engine, it answers with its next move ([`accepts_draw`]);
+    /// with no engine side, or two, the draw is agreed at once.
+    fn offer_draw(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
+            self.status = reason;
+            return;
+        }
+        if let Some(outcome) = self.game.outcome() {
+            self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
+            return;
+        }
+        let engine_sides = self.settings.engine_plays.iter().filter(|&&p| p).count();
+        if engine_sides == 1 {
+            self.draw_offered = true;
+            self.status = format!(
+                "You offer a draw. {} answers with its next move.",
+                self.node.name
+            );
+            return;
+        }
+        self.game.agree_draw();
+        self.game_ended(engine);
     }
 
     fn set_level(&mut self, text: &str) {
@@ -801,6 +1030,9 @@ impl App {
         pgn.set_tag("Event", "cbtui game");
         pgn.set_tag("White", &name(Color::White));
         pgn.set_tag("Black", &name(Color::Black));
+        if let Some(tc) = self.settings.clock {
+            pgn.set_tag("TimeControl", &tc.pgn_tag());
+        }
         self.status = match fs::write(path, pgn.to_pgn()) {
             Ok(()) => format!("Saved the game to {path}."),
             Err(e) => format!("Couldn't save {path}: {e}"),
@@ -825,7 +1057,9 @@ impl App {
         self.game_number += 1;
         self.selected = None;
         self.promotion = None;
+        self.draw_offered = false;
         self.thinking = None;
+        self.reset_clocks();
         self.status = "New game.".into();
         self.maybe_start_engine(engine);
     }
@@ -838,16 +1072,31 @@ impl App {
         }
         self.browse = None;
         self.cancel_search(engine);
-        if self.game.undo().is_none() {
+        self.draw_offered = false;
+        self.selected = None;
+        self.promotion = None;
+        // A resignation or an agreed draw is taken back on its own: the moves stay.
+        if matches!(
+            self.game.outcome(),
+            Some(Outcome::Resignation { .. } | Outcome::DrawAgreed)
+        ) {
+            if let Some(played) = self.game.undo() {
+                let _ = self.game.play_with_comment(played.mv, played.comment);
+            }
+            self.resume_clock();
+            self.status = "Took that back: the game goes on.".into();
+            self.maybe_start_engine(engine);
+            return;
+        }
+        if !self.take_back() {
             self.status = "No move to take back.".into();
             return;
         }
         let one_engine = self.settings.engine_plays.iter().filter(|&&p| p).count() == 1;
         if one_engine && self.engine_to_move() {
-            self.game.undo();
+            self.take_back();
         }
-        self.selected = None;
-        self.promotion = None;
+        self.resume_clock();
         self.thinking = None;
         self.status = "Took back.".into();
         self.maybe_start_engine(engine);
@@ -926,10 +1175,28 @@ impl App {
     pub fn search_params(&self) -> SearchParams {
         let position = proto::Position::fen(self.game.start().to_fen())
             .with_moves(rules::game_moves_uci(&self.game));
-        let mut params = SearchParams::new(position).limits(SearchLimits {
-            time_ms: Some(self.settings.movetime_ms),
-            ..SearchLimits::default()
-        });
+        let mut limits = SearchLimits::default();
+        let tc_side = |clocks: &Clocks, color: Color| SideClock {
+            time_ms: clocks.left(color, self.now),
+            increment_ms: clocks.control().increment_ms,
+        };
+        match &self.clocks {
+            Some(clocks) if self.node.caps.clock => {
+                limits.clock = Some(proto::Clock {
+                    white: tc_side(clocks, Color::White),
+                    black: tc_side(clocks, Color::Black),
+                    moves_to_go: None,
+                });
+            }
+            // An engine that can't read a clock gets a share of what's left, and the increment.
+            Some(clocks) => {
+                let left = clocks.left(self.game.position().side_to_move(), self.now);
+                let share = left / CLOCK_FALLBACK_MOVES + clocks.control().increment_ms;
+                limits.time_ms = Some(share.min(left.saturating_sub(CLOCK_SAFETY_MS)).max(1));
+            }
+            None => limits.time_ms = Some(self.settings.movetime_ms),
+        }
+        let mut params = SearchParams::new(position).limits(limits);
         if self.node.caps.strength
             && let Some(level) = self.settings.level
         {
@@ -1041,14 +1308,37 @@ impl App {
         }
         // A PGN comment with the score and depth, as engines' games usually have (`+0.35/18`).
         let comment = score.map(|score| format!("{}/{}", score_text(score), result.depth));
+        // A draw offer is answered with the engine's move: it accepts if its own score says
+        // it isn't better, and the move isn't played.
+        let engine_side = self.settings.engine_plays[position.side_to_move().index()];
+        let answering = engine_side && std::mem::take(&mut self.draw_offered);
+        if answering && result.score.is_some_and(accepts_draw) {
+            self.game.agree_draw();
+            self.game_ended(engine);
+            self.status = format!("{} accepts the draw. {}", self.node.name, self.status);
+            return;
+        }
         let san = position.to_san(mv);
-        if self.game.play_with_comment(mv, comment).is_ok() {
+        if self.play(mv, comment) {
             // A picker opened for the side the engine just moved for is stale now.
             self.promotion = None;
             self.selected = None;
-            self.status = format!("{} played {san}.", self.node.name);
+            self.status = if answering {
+                format!("{} declines the draw and plays {san}.", self.node.name)
+            } else {
+                format!("{} played {san}.", self.node.name)
+            };
             self.after_move(engine);
         }
+    }
+}
+
+/// Whether an engine whose search scored `score` (from its own point of view) accepts a draw:
+/// when it doesn't think it's better ([`DRAW_ACCEPT_CP`]), or it is being mated.
+pub fn accepts_draw(score: Score) -> bool {
+    match score.value {
+        ScoreValue::Centipawns(cp) => cp <= DRAW_ACCEPT_CP,
+        ScoreValue::Mate(n) => n < 0,
     }
 }
 
@@ -1279,6 +1569,194 @@ mod tests {
         press(&mut app, &mut engine, KeyCode::Left);
         assert_eq!(app.browse, None);
         assert_eq!(app.cursor, sq("d2"));
+    }
+
+    use crate::clock::TimeControl;
+    use std::time::Duration;
+
+    fn timed(engine_plays: [bool; 2], clock: &str, caps: EngineCapabilities) -> App {
+        let settings = Settings {
+            engine_plays,
+            clock: Some(TimeControl::parse(clock).unwrap()),
+            ..Settings::default()
+        };
+        let mut n = node();
+        n.caps = caps;
+        App::new(n, settings).unwrap()
+    }
+
+    fn after(app: &App, ms: u64) -> Instant {
+        app.now + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn clocks_start_with_the_first_move_and_go_to_an_engine_that_reads_them() {
+        let caps = EngineCapabilities {
+            clock: true,
+            ..EngineCapabilities::default()
+        };
+        let (mut app, mut engine) = (timed([false, true], "1+2", caps), FakeEngine::default());
+        assert!(!app.clock_running());
+        let t = after(&app, 5000);
+        app.tick(t, &mut engine);
+        type_line(&mut app, &mut engine, "e4");
+        let clocks = app.clocks.clone().unwrap();
+        // The first move is free, and earns the increment.
+        assert_eq!(clocks.times(t), [62_000, 60_000]);
+        assert_eq!(clocks.running(), Some(Color::Black));
+        let limits = &engine.searches[0].limits;
+        assert_eq!(limits.time_ms, None);
+        let clock = limits.clock.clone().unwrap();
+        assert_eq!((clock.white.time_ms, clock.black.time_ms), (62_000, 60_000));
+        assert_eq!(clock.black.increment_ms, 2000);
+
+        // The engine takes 3 s: charged to it, plus its increment.
+        let t = after(&app, 3000);
+        app.tick(t, &mut engine);
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        assert_eq!(app.clocks.as_ref().unwrap().times(t), [62_000, 59_000]);
+        assert_eq!(app.clocks.as_ref().unwrap().running(), Some(Color::White));
+    }
+
+    #[test]
+    fn an_engine_without_a_clock_gets_a_share_of_its_time() {
+        let caps = EngineCapabilities::default();
+        let (mut app, mut engine) = (timed([false, true], "5+3", caps), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        let limits = &engine.searches[0].limits;
+        assert_eq!(limits.clock, None);
+        assert_eq!(limits.time_ms, Some(300_000 / CLOCK_FALLBACK_MOVES + 3000));
+    }
+
+    #[test]
+    fn a_flag_falls_and_the_search_stops() {
+        let (mut app, mut engine) = (
+            timed([false, true], "0.5", EngineCapabilities::default()),
+            FakeEngine::default(),
+        );
+        type_line(&mut app, &mut engine, "e4");
+        app.tick(after(&app, 29_000), &mut engine);
+        assert_eq!(app.game.outcome(), None);
+        app.tick(after(&app, 1000), &mut engine);
+        assert_eq!(
+            app.game.outcome(),
+            Some(Outcome::Timeout {
+                winner: Color::White
+            })
+        );
+        assert_eq!(engine.stops, [101]);
+        assert!(!app.clock_running());
+        assert!(app.status.starts_with("Time out"), "{}", app.status);
+        // Its late answer isn't played.
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        assert_eq!(app.game.moves().len(), 1);
+    }
+
+    #[test]
+    fn a_takeback_puts_the_clocks_back() {
+        let (mut app, mut engine) = (
+            timed([false, true], "1", EngineCapabilities::default()),
+            FakeEngine::default(),
+        );
+        type_line(&mut app, &mut engine, "e4");
+        app.tick(after(&app, 4000), &mut engine);
+        app.handle_node(answer(101, "e7e5"), &mut engine);
+        app.tick(after(&app, 7000), &mut engine);
+        type_line(&mut app, &mut engine, "Nf3");
+        app.tick(after(&app, 1000), &mut engine);
+        // Takes back Nf3, the engine still thinking: the clocks are as they were when it
+        // was played (White's 7 s are spent), and White's runs again.
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(app.game.moves().len(), 2);
+        let clocks = app.clocks.clone().unwrap();
+        assert_eq!(clocks.times(app.now), [53_000, 56_000]);
+        assert_eq!(clocks.running(), Some(Color::White));
+        // Then e5 and e4: back to the start, where no clock runs.
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(app.game.moves().len(), 0);
+        let clocks = app.clocks.clone().unwrap();
+        assert_eq!(clocks.times(app.now), [60_000, 60_000]);
+        assert_eq!(clocks.running(), None);
+    }
+
+    #[test]
+    fn resigning_ends_the_game_for_the_persons_side_and_can_be_taken_back() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        type_line(&mut app, &mut engine, ":resign");
+        assert_eq!(
+            app.game.outcome(),
+            Some(Outcome::Resignation {
+                winner: Color::Black
+            })
+        );
+        assert_eq!(engine.stops, [101], "the engine stops thinking");
+        assert!(app.status.contains("Black wins"), "{}", app.status);
+        app.handle_key(key('u'), &mut engine);
+        assert_eq!(app.game.outcome(), None);
+        assert_eq!(app.game.moves().len(), 1, "the moves stay");
+        assert!(app.searching(), "and the engine's turn goes on");
+    }
+
+    #[test]
+    fn the_engine_answers_a_draw_offer_from_its_score() {
+        let answer_scored = |id: i64, cp: i32| {
+            NodeEvent::Response(Response::ok::<proto::Search>(
+                id.into(),
+                &serde_json::from_value::<SearchResult>(serde_json::json!({
+                    "bestMove": "e7e5", "score": {"cp": cp}, "pv": ["e7e5"],
+                    "depth": 9, "selDepth": 12, "nodes": 1000, "timeMs": 10, "stopped": false
+                }))
+                .unwrap(),
+            ))
+        };
+        // Ahead by 0.40 for itself: it declines and plays on.
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        type_line(&mut app, &mut engine, ":draw");
+        assert!(app.draw_offered);
+        app.handle_node(answer_scored(101, 40), &mut engine);
+        assert!(!app.draw_offered);
+        assert_eq!(app.game.moves().len(), 2);
+        assert!(app.status.contains("declines"), "{}", app.status);
+
+        // Level for itself: it accepts, and its move isn't played.
+        let (mut app, mut engine) = (self::app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":draw");
+        type_line(&mut app, &mut engine, "e4");
+        app.handle_node(answer_scored(101, 0), &mut engine);
+        assert_eq!(app.game.outcome(), Some(Outcome::DrawAgreed));
+        assert_eq!(app.game.moves().len(), 1);
+        assert!(app.status.starts_with("eng accepts"), "{}", app.status);
+    }
+
+    #[test]
+    fn with_no_engine_side_a_draw_is_agreed_at_once() {
+        let settings = Settings {
+            engine_plays: [false, false],
+            ..Settings::default()
+        };
+        let (mut app, mut engine) = (App::new(node(), settings).unwrap(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":draw");
+        assert_eq!(app.game.outcome(), Some(Outcome::DrawAgreed));
+        assert!(accepts_draw(Score::mate(-3)) && !accepts_draw(Score::mate(2)));
+    }
+
+    #[test]
+    fn clock_sets_and_clears_the_time_control() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, "e4");
+        type_line(&mut app, &mut engine, ":clock 3+2");
+        let clocks = app.clocks.clone().unwrap();
+        assert_eq!(clocks.times(app.now), [180_000, 180_000]);
+        // The game has begun, so the side to move's clock runs.
+        assert_eq!(clocks.running(), Some(Color::Black));
+        assert!(app.status.contains("3+2"), "{}", app.status);
+        type_line(&mut app, &mut engine, ":clock fast");
+        assert!(app.status.starts_with("Usage"), "{}", app.status);
+        type_line(&mut app, &mut engine, ":clock off");
+        assert_eq!(app.clocks, None);
+        assert_eq!(app.settings.clock, None);
     }
 
     #[test]

@@ -65,7 +65,7 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 | Milestone | Scope | Done when |
 | --- | --- | --- |
 | **M1 · Playable** | CNP connection; board with mouse, keyboard and typed moves; engine plays either side, both or none; levels (if the engine has them) and time per move; live thinking; move list; undo, new game, FEN, flip; PGN save; help | A full game against cb2026 in a terminal, with no illegal moves and a clean exit |
-| M2 · Clocks and game flow | Chess clocks with increment (CNP `clock` limits), resign and draw offers, PGN load (done: the PGN viewer), promotion picker (done), move-list navigation (done: `[` `]`) | A timed game against cb2026 to the end |
+| **M2 · Clocks and game flow** | Chess clocks with increment (CNP `clock` limits), resign and draw offers, PGN load (the PGN viewer), promotion picker, move-list navigation (`[` `]`) | A timed game against cb2026 to the end |
 | M3 · Analysis | Infinite analysis with MultiPV (capabilities `multipv`), the evaluation broken into terms (`engine/evaluate`), technique switches (`engine/techniques`), each shown only when the engine has it | Analysing a position shows several lines and the evaluation's terms with cb2026 |
 | M4 · Look inside | Following the search at its root (`engine/root`) and browsing its search tree (`engine/tree`, `engine/treeNode`), generic views of what the engine reports | The tree browser opens a cb2026 search and walks it |
 | Later | Engines on another computer through cb2026's network client; a UCI backend; themes | Decided when M3 is done |
@@ -85,5 +85,11 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Promotions pick their piece on the board: the four choices stand on the promotion
       square and the three behind it, a click or `q` `r` `b` `n` chooses, Enter is a queen
       (2026-11-24).
+- [x] Clocks start with the first move, and a takeback puts them back to where they stood
+      when the moves taken back were played. An engine without the `clock` capability gets
+      1/30 of its time left plus the increment each move (2026-11-24).
+- [x] The engine answers a draw offer with its next move, from its own reported score: it
+      accepts at +0.10 or less for itself, or when it is being mated. cbtui doesn't judge the
+      position (2026-11-24).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

@@ -30,10 +30,19 @@ changes the picture.
   arrows offers Q R B N on the promotion square and the three behind it; a click or
   `q` `r` `b` `n` chooses, Enter is a queen, Esc puts the pawn back. Tried in tmux
   (2026-11-24).
+- **M2 · Clocks and game flow: built** (eighth PR). `--clock 5+3` or `:clock 5+3` plays to a
+  clock with an increment, from the first move; the clocks stand beside the players, the
+  running one highlighted, and a flag ends the game (a draw against a lone king). cb2026 is
+  sent both clocks (`limits.clock`); an engine without the `clock` capability gets a share
+  of its time. `:resign`, and `:draw`, which the engine answers with its next move from its
+  score. `u` takes back a resignation or an agreed draw, and takebacks put the clocks back.
+  Tried in tmux (2026-11-24): cb2026 against itself at 0.2+0 played 72 moves until White's
+  flag fell; at 5+3, a draw offer after 1. e4 was accepted (cb2026 scored itself -0.17), and
+  a resignation was taken back.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.
-- Tests: 66 unit tests (the app against a fake engine, the CNP client against a fake node over
+- Tests: 81 unit tests (the app against a fake engine, the CNP client against a fake node over
   pipes, the layout and mouse mapping with Ratatui's test backend), and 2 against a real cb2026
   (`tests/engine.rs`, run when `CBTUI_TEST_ENGINE` is set; CI builds cb2026 at the pinned
   commit and sets it).
@@ -54,8 +63,8 @@ that chessengine pins there.
 Engine features cb2026 offers that no milestone covers yet (mate search, Chess960, pondering,
 root-move restriction, depth limits): Carlos to decide in #4.
 
-M2 (`docs/PRD.md`): clocks with increment, resign and draw offers. (PGN load, stepping
-through the moves and the promotion picker are done.) Later for the viewer: more than the first game
+M3 (`docs/PRD.md`): infinite analysis with several lines (MultiPV), the evaluation broken
+into terms, technique switches. Later for the viewer: more than the first game
 in a file, and drawing the arrows and squares PGN comments can carry (`[%cal]`, `[%csl]`).
 
 ## How to carry on

@@ -50,6 +50,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use ratatui_image::Image;
 
 use crate::app::{App, score_text};
+use crate::clock::clock_text;
 use crate::pieces::{self, Pieces};
 use crate::review::Review;
 use crate::rules::{self, Color, Position, Square};
@@ -467,7 +468,12 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
             "you".to_string()
         }
     };
-    let mut strength = format!("{} ms a move", app.settings.movetime_ms);
+    let mut strength = match &app.clocks {
+        Some(clocks) if app.node.caps.clock => format!("{} clock", clocks.control()),
+        // The engine can't read a clock: cbtui gives it a share of its time each move.
+        Some(clocks) => format!("{} clock (cbtui times {})", clocks.control(), app.node.name),
+        None => format!("{} ms a move", app.settings.movetime_ms),
+    };
     if let Some(level) = app.level_text() {
         strength = format!("{level} · {strength}");
     }
@@ -485,15 +491,20 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 String::new()
             };
-            format!("{side} to move{check}{thinking}")
+            let offer = if app.draw_offered {
+                " · draw offered"
+            } else {
+                ""
+            };
+            format!("{side} to move{check}{thinking}{offer}")
         }
     };
+    let mut players = vec![Span::raw(format!("White: {}", player(Color::White)))];
+    players.extend(clock_span(app, Color::White));
+    players.push(Span::raw(format!("   Black: {}", player(Color::Black))));
+    players.extend(clock_span(app, Color::Black));
     let lines = vec![
-        Line::from(format!(
-            "White: {}   Black: {}",
-            player(Color::White),
-            player(Color::Black)
-        )),
+        Line::from(players),
         Line::from(strength),
         Line::from(Span::styled(
             state,
@@ -505,6 +516,18 @@ fn draw_info(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
         area,
     );
+}
+
+/// `color`'s clock, after a space, highlighted while it runs; nothing without clocks.
+fn clock_span(app: &App, color: Color) -> Option<Span<'static>> {
+    let clocks = app.clocks.as_ref()?;
+    let text = format!(" {}", clock_text(clocks.left(color, app.now)));
+    let style = if clocks.running() == Some(color) {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        Style::default()
+    };
+    Some(Span::styled(text, style))
 }
 
 /// A version with a long commit hash in its build metadata cut to [`SHORT_HASH_LEN`]
@@ -780,6 +803,13 @@ fn zoom_summary(app: &App) -> String {
         if let Some(t) = &app.thinking {
             parts.push(format!("{} d{}", score_text(t.score), t.depth));
         }
+        if let Some(clocks) = &app.clocks {
+            parts.push(format!(
+                "W {} B {}",
+                clock_text(clocks.left(Color::White, app.now)),
+                clock_text(clocks.left(Color::Black, app.now))
+            ));
+        }
     }
     parts.push("z panels ".into());
     parts.join(" · ")
@@ -828,6 +858,8 @@ Commands
   :play white|black|both|none   which sides the engine plays
   :level <n>|max                the engine's playing level
   :time <ms>                    how long it thinks a move
+  :clock <min>+<sec>|off        play to a clock (5+3), from the first move
+  :resign  :draw                resign, or offer the engine a draw
   :fen <FEN>                    a new game from a position
   :pgn <file>                   save the game
   :new  :undo  :flip  :zoom  :go  :stop  :quit
@@ -937,6 +969,28 @@ mod tests {
         let row = |piece: &str| text.lines().position(|l| l.contains(piece)).unwrap();
         assert!(row("WQ") < row("WR") && row("WR") < row("WB") && row("WB") < row("WN"));
         assert!(text.contains("q queen"), "{text}");
+    }
+
+    #[test]
+    fn clocks_stand_beside_the_players_and_in_the_zoomed_summary() {
+        let node = NodeSummary {
+            name: "eng".into(),
+            ..NodeSummary::default()
+        };
+        let settings = Settings {
+            clock: Some(crate::clock::TimeControl::parse("5+3").unwrap()),
+            ..Settings::default()
+        };
+        let mut app = App::new(node, settings).unwrap();
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("White: you 5:00   Black: eng 5:00"), "{text}");
+        // This engine can't read a clock, so the panel says cbtui times it.
+        assert!(text.contains("5+3 clock (cbtui times eng)"), "{text}");
+        app.draw_offered = true;
+        assert!(screen(&app, 100, 32).contains("draw offered"));
+        app.zoomed = true;
+        let text = screen(&app, 100, 32);
+        assert!(text.contains("W 5:00 B 5:00"), "{text}");
     }
 
     #[test]
