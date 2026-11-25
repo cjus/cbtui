@@ -111,6 +111,8 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Themes: brown (the default), blue, green and grey boards (`--theme`, `:theme`), each in
       24-bit colour and the nearest 256-colour shades. Dark squares are mid tones so black and
       white letter pieces both read on them; white letters on light squares take a deep
-      shade of the theme (Carlos, 2026-11-25).
+      shade of the theme (Carlos, 2026-11-25). A fifth, dark, for dark terminals: dim slate
+      squares, white pieces muted to a soft grey (pictures too, by tinting them) and a dull
+      last-move tint (Carlos, 2026-11-25).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).

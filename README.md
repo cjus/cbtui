@@ -35,7 +35,7 @@ cbtui                       # you play White against cb2026 on the PATH
 cbtui --play white          # the engine plays White
 cbtui --level 8             # a weaker engine, if it has levels
 cbtui --clock 5+3           # five minutes each, three seconds added a move
-cbtui --theme blue          # the board's colours: brown (default), blue, green or grey
+cbtui --theme blue          # the board: brown (default), blue, green, grey, or dark
 cbtui --engine ~/bin/cb2027 # another CNP engine (or set CBTUI_ENGINE)
 cbtui --help                # every option
 ```

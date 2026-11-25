@@ -156,11 +156,15 @@ impl Pieces {
     }
 }
 
+/// What makes a picture different: the piece, the square's colour, the tint, and the size in
+/// cells.
+type PictureKey = (usize, [u8; 3], [u8; 3], u16, u16);
+
 /// The piece drawings, the terminal's image protocol, and the pictures made so far.
 pub struct PieceArt {
     picker: Picker,
     trees: Vec<usvg::Tree>,
-    cache: HashMap<(usize, [u8; 3], u16, u16), Protocol>,
+    cache: HashMap<PictureKey, Protocol>,
 }
 
 impl std::fmt::Debug for PieceArt {
@@ -199,22 +203,23 @@ impl PieceArt {
         f32::from(height) / f32::from(width)
     }
 
-    /// The picture of `piece` on a square of `background`, `cells` wide and tall, made the
-    /// first time it is asked for.
+    /// The picture of `piece` on a square of `background`, its colours multiplied by `tint`
+    /// (white for none), `cells` wide and tall, made the first time it is asked for.
     pub fn picture(
         &mut self,
         piece: Piece,
         background: [u8; 3],
+        tint: [u8; 3],
         cells: (u16, u16),
     ) -> Option<&Protocol> {
-        let key = (index(piece), background, cells.0, cells.1);
+        let key = (index(piece), background, tint, cells.0, cells.1);
         if !self.cache.contains_key(&key) {
             let FontSize { width, height } = self.picker.font_size();
             let pixels = (
                 u32::from(cells.0) * u32::from(width),
                 u32::from(cells.1) * u32::from(height),
             );
-            let image = draw_piece(&self.trees[key.0], background, pixels)?;
+            let image = draw_piece(&self.trees[key.0], background, tint, pixels)?;
             let size = Size::new(cells.0, cells.1);
             let protocol = self
                 .picker
@@ -237,15 +242,16 @@ fn parse_trees() -> Vec<usvg::Tree> {
 }
 
 /// `tree` drawn over `background`, centred in a picture of `pixels` (width, height), filling
-/// [`PIECE_SHARE`] of its smaller side. Every pixel is opaque.
+/// [`PIECE_SHARE`] of its smaller side, its colours multiplied by `tint`: white leaves them as
+/// drawn, a soft grey mutes the white parts and leaves black black. Every pixel is opaque.
 pub fn draw_piece(
     tree: &usvg::Tree,
     background: [u8; 3],
+    tint: [u8; 3],
     (width, height): (u32, u32),
 ) -> Option<RgbaImage> {
+    // The piece alone first, on a clear layer, so the tint touches it and not the square.
     let mut pixmap = tiny_skia::Pixmap::new(width, height)?;
-    let [r, g, b] = background;
-    pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
     let size = tree.size();
     let side = width.min(height) as f32 * PIECE_SHARE;
     let scale = side / size.width().max(size.height());
@@ -253,13 +259,27 @@ pub fn draw_piece(
     let dy = (height as f32 - size.height() * scale) / 2.0;
     let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
     resvg::render(tree, transform, &mut pixmap.as_mut());
-    // The background is opaque, so tiny-skia's premultiplied pixels are plain RGBA.
-    RgbaImage::from_raw(width, height, pixmap.take())
+    // Tinted, then laid over the square. Pixels are premultiplied by their alpha, so tinting
+    // scales the colour channels as they are, and the square shows through by 1 - alpha.
+    let mut pixels = pixmap.take();
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = u32::from(pixel[3]);
+        for channel in 0..3 {
+            let piece = u32::from(pixel[channel]) * u32::from(tint[channel]) / 255;
+            let square = u32::from(background[channel]) * (255 - alpha) / 255;
+            pixel[channel] = (piece + square).min(255) as u8;
+        }
+        pixel[3] = u8::MAX;
+    }
+    RgbaImage::from_raw(width, height, pixels)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No tint: the drawings' own colours.
+    const WHITE: [u8; 3] = [255, 255, 255];
 
     #[test]
     fn two_letters_name_side_and_piece() {
@@ -273,7 +293,7 @@ mod tests {
         let trees = parse_trees();
         assert_eq!(trees.len(), 12);
         for tree in &trees {
-            let image = draw_piece(tree, [240, 217, 181], (70, 64)).unwrap();
+            let image = draw_piece(tree, [240, 217, 181], WHITE, (70, 64)).unwrap();
             assert_eq!(image.dimensions(), (70, 64));
             // The corner is the square's colour; the centre is the piece.
             assert_eq!(image.get_pixel(0, 0).0, [240, 217, 181, 255]);
@@ -284,12 +304,25 @@ mod tests {
     #[test]
     fn white_and_black_pieces_differ() {
         let trees = parse_trees();
-        let white = draw_piece(&trees[0], [0, 0, 255], (48, 48)).unwrap();
-        let black = draw_piece(&trees[6], [0, 0, 255], (48, 48)).unwrap();
+        let white = draw_piece(&trees[0], [0, 0, 255], WHITE, (48, 48)).unwrap();
+        let black = draw_piece(&trees[6], [0, 0, 255], WHITE, (48, 48)).unwrap();
         assert_ne!(white, black);
         // A white king has white in it; a black king's body is black.
         assert!(white.pixels().any(|p| p.0 == [255, 255, 255, 255]));
         assert!(black.pixels().any(|p| p.0 == [0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_tint_mutes_the_white_and_leaves_black_and_the_square() {
+        let trees = parse_trees();
+        let muted = [200, 200, 192];
+        let king = draw_piece(&trees[0], [0, 0, 255], muted, (48, 48)).unwrap();
+        // No pure white left: it's the soft grey now.
+        assert!(!king.pixels().any(|p| p.0 == [255, 255, 255, 255]));
+        assert!(king.pixels().any(|p| p.0 == [200, 200, 192, 255]));
+        // Its outline is still black, and the corner is still the square.
+        assert!(king.pixels().any(|p| p.0 == [0, 0, 0, 255]));
+        assert_eq!(king.get_pixel(0, 0).0, [0, 0, 255, 255]);
     }
 
     #[test]
@@ -302,10 +335,14 @@ mod tests {
         let mut art = PieceArt::new(picker).unwrap();
         assert_eq!(art.cell_aspect(), 2.0);
         let king = Piece::new(Color::White, PieceType::King);
-        assert!(art.picture(king, [1, 2, 3], (6, 3)).is_some());
-        assert!(art.picture(king, [1, 2, 3], (6, 3)).is_some());
-        assert!(art.picture(king, [9, 9, 9], (6, 3)).is_some());
-        assert_eq!(art.cache.len(), 2);
+        assert!(art.picture(king, [1, 2, 3], WHITE, (6, 3)).is_some());
+        assert!(art.picture(king, [1, 2, 3], WHITE, (6, 3)).is_some());
+        assert!(art.picture(king, [9, 9, 9], WHITE, (6, 3)).is_some());
+        assert!(
+            art.picture(king, [9, 9, 9], [200, 200, 192], (6, 3))
+                .is_some()
+        );
+        assert_eq!(art.cache.len(), 3, "a tint is a picture of its own");
     }
 
     #[test]

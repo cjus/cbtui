@@ -30,7 +30,8 @@ Options:
   --fen <FEN>            Start from this position
   --pgn <file>           View the first game in a PGN file: the arrows step through it,
                          variations included. Works without an engine
-  --theme <name>         The board's colours: brown (default), blue, green, grey
+  --theme <name>         The board's colours: brown (default), blue, green, grey, or
+                         dark for dark terminals
   --pieces <style>       auto (default): pictures if the terminal can show them (not
                          inside tmux), else letters; letters: WK, BP; symbols: chess
                          symbols. --ascii is the same as --pieces letters
