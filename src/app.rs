@@ -59,6 +59,7 @@ use cnp::engine::{
 use cnp::{Response, code};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::analysis::{Analysis, DEFAULT_LINES, MAX_LINES};
 use crate::clock::{Clocks, TimeControl};
 use crate::node::{Engine, NodeEvent};
 use crate::review::Review;
@@ -66,6 +67,12 @@ use crate::rules::{self, Color, Game, Move, Outcome, Piece, Position, Square};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
 pub const PROGRESS_MS: u64 = 200;
+
+/// How often an analysis of several lines asks for progress: every report. An engine that
+/// throttles its reports with one interval for all its lines sends the best line and drops
+/// the others, which follow it within milliseconds; unthrottled, it reports each line once a
+/// depth, a few messages a second once the search is deep.
+pub const ANALYSIS_PROGRESS_MS: u64 = 0;
 
 /// How long the engine thinks about a move by default, in milliseconds.
 pub const DEFAULT_MOVETIME_MS: u64 = 1000;
@@ -107,6 +114,8 @@ pub struct NodeSummary {
     pub license: String,
     /// What it can do. All `false` if it isn't an engine node.
     pub caps: EngineCapabilities,
+    /// The most lines one search may return (its `maxMultipv`).
+    pub max_multipv: u32,
 }
 
 impl NodeSummary {
@@ -125,6 +134,7 @@ impl NodeSummary {
             version: info.node.version.clone(),
             license: info.node.license.clone(),
             caps: info.capabilities.engine.clone().unwrap_or_default(),
+            max_multipv: info.limits.multipv(),
         }
     }
 }
@@ -142,6 +152,8 @@ pub struct Settings {
     pub fen: Option<String>,
     /// The time control, if games are played to a clock.
     pub clock: Option<TimeControl>,
+    /// How many lines an analysis asks for, if the engine can find several.
+    pub lines: u32,
 }
 
 impl Default for Settings {
@@ -152,6 +164,7 @@ impl Default for Settings {
             level: None,
             fen: None,
             clock: None,
+            lines: DEFAULT_LINES,
         }
     }
 }
@@ -221,6 +234,8 @@ pub struct App {
     pub now: Instant,
     /// Whether the person has offered the engine a draw it hasn't answered yet.
     pub draw_offered: bool,
+    /// The engine analysing the position on the board (`i`), when it is.
+    pub analysis: Option<Analysis>,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -277,6 +292,7 @@ impl App {
             clocks,
             now: Instant::now(),
             draw_offered: false,
+            analysis: None,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -346,7 +362,9 @@ impl App {
     fn resume_clock(&mut self) {
         let now = self.now;
         let side = self.game.position().side_to_move();
-        let running = !self.game.moves().is_empty() && self.game.outcome().is_none();
+        let running = !self.game.moves().is_empty()
+            && self.game.outcome().is_none()
+            && self.analysis.is_none();
         if let Some(clocks) = &mut self.clocks {
             if running {
                 clocks.start(side, now);
@@ -365,7 +383,7 @@ impl App {
         }
         if let (Some(clocks), Some(before)) = (&mut self.clocks, before) {
             self.clock_history.push(before);
-            if self.game.outcome().is_some() {
+            if self.game.outcome().is_some() || self.analysis.is_some() {
                 clocks.stop(self.now);
             } else {
                 clocks.press(mover, self.now);
@@ -414,6 +432,24 @@ impl App {
                 position
             }
             None => self.game.position().clone(),
+        }
+    }
+
+    /// The game up to the position on the board: what an analysis searches, so the engine
+    /// sees the moves that led there (and any repetition).
+    pub fn shown_game(&self) -> Game {
+        if let Some(review) = &self.review {
+            return review.game_here();
+        }
+        match self.browse {
+            Some(ply) => {
+                let mut game = Game::from_position(self.game.start().clone());
+                for played in self.game.moves().iter().take(ply) {
+                    let _ = game.play_with_comment(played.mv, played.comment.clone());
+                }
+                game
+            }
+            None => self.game.clone(),
         }
     }
 
@@ -540,6 +576,11 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
+        self.key(key, engine);
+        self.sync_analysis(engine);
+    }
+
+    fn key(&mut self, key: KeyEvent, engine: &mut dyn Engine) {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.quit = true;
             return;
@@ -572,6 +613,7 @@ impl App {
             KeyCode::Char('u') => self.undo(engine),
             KeyCode::Char('t') => self.flipped = !self.flipped,
             KeyCode::Char('z') => self.zoomed = !self.zoomed,
+            KeyCode::Char('i') => self.toggle_analysis(engine),
             // `m`: the engine moves (now, if it is thinking already).
             KeyCode::Char('m') if self.searching() => self.move_now(engine),
             KeyCode::Char('m') => self.go(engine),
@@ -719,6 +761,7 @@ impl App {
         self.cursor = square;
         self.cursor_visible = false;
         self.handle_square(square, engine);
+        self.sync_analysis(engine);
     }
 
     /// Picks up a piece on `square`, or puts the picked-up one down there.
@@ -847,6 +890,8 @@ impl App {
                 }
                 _ => self.status = format!("Usage: :time <1-{MAX_MOVETIME_MS}> (milliseconds)"),
             },
+            ("analyse" | "analyze" | "an", _) => self.toggle_analysis(engine),
+            ("lines", [n]) => self.set_lines(n),
             ("resign", _) => self.resign(engine),
             ("draw", _) => self.offer_draw(engine),
             ("clock", [text]) => self.set_clock(text),
@@ -884,6 +929,8 @@ impl App {
             self.status = NO_ENGINE.into();
             return;
         }
+        // Playing ends an analysis: the engine can't do both at once.
+        self.end_analysis(engine);
         let mut status = match sides {
             [false, false] => "You play both sides.".to_string(),
             _ => format!("{} plays {side}.", self.node.name),
@@ -942,6 +989,10 @@ impl App {
 
     /// The person resigns: their side if the engine plays the other, else the side to move.
     fn resign(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.analysing() {
+            self.status = reason;
+            return;
+        }
         if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
             self.status = reason;
             return;
@@ -965,6 +1016,10 @@ impl App {
     /// Offers a draw. Against the engine, it answers with its next move ([`accepts_draw`]);
     /// with no engine side, or two, the draw is agreed at once.
     fn offer_draw(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.analysing() {
+            self.status = reason;
+            return;
+        }
         if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
             self.status = reason;
             return;
@@ -984,6 +1039,127 @@ impl App {
         }
         self.game.agree_draw();
         self.game_ended(engine);
+    }
+
+    /// Starts or stops analysing. While it analyses, the engine plays neither side, the clocks
+    /// stop, and moves can be made for both sides; stopping puts back who played what.
+    fn toggle_analysis(&mut self, engine: &mut dyn Engine) {
+        if let Some(analysis) = self.end_analysis(engine) {
+            self.settings.engine_plays = analysis.engine_plays;
+            self.status = "Analysis stopped.".into();
+            self.resume_clock();
+            if self.review.is_none() && self.browse.is_none() {
+                self.maybe_start_engine(engine);
+            }
+            return;
+        }
+        if !self.has_engine {
+            self.status = NO_ENGINE.into();
+            return;
+        }
+        if !self.node.caps.progress {
+            self.status = format!(
+                "{} doesn't report its search as it goes, so cbtui can't show an analysis.",
+                self.node.name
+            );
+            return;
+        }
+        self.cancel_search(engine);
+        self.draw_offered = false;
+        self.analysis = Some(Analysis::new(self.settings.engine_plays));
+        self.settings.engine_plays = [false, false];
+        if let Some(clocks) = &mut self.clocks {
+            clocks.stop(self.now);
+        }
+        let lines = self.analysis_lines();
+        self.status = format!(
+            "Analysing the position on the board, {lines} line{}. i stops it.",
+            if lines == 1 { "" } else { "s" }
+        );
+        self.sync_analysis(engine);
+    }
+
+    /// Stops the analysis, if there is one, and returns it.
+    fn end_analysis(&mut self, engine: &mut dyn Engine) -> Option<Analysis> {
+        let analysis = self.analysis.take()?;
+        if let Some(id) = analysis.id {
+            let _ = engine.stop(id);
+        }
+        Some(analysis)
+    }
+
+    /// How many lines an analysis asks for: as many as asked, if the engine can find them.
+    pub fn analysis_lines(&self) -> u32 {
+        if self.node.caps.multipv {
+            self.settings.lines.min(self.node.max_multipv).max(1)
+        } else {
+            1
+        }
+    }
+
+    /// Sets how many lines an analysis shows.
+    fn set_lines(&mut self, text: &str) {
+        if !self.node.caps.multipv {
+            self.status = format!("{} finds one line at a time.", self.node.name);
+            return;
+        }
+        let most = MAX_LINES.min(self.node.max_multipv);
+        match text.parse::<u32>() {
+            Ok(n) if (1..=most).contains(&n) => {
+                self.settings.lines = n;
+                self.status = format!("Analysis shows {n} line{}.", if n == 1 { "" } else { "s" });
+                // Searched again with the new count.
+                if let Some(analysis) = &mut self.analysis {
+                    analysis.key = None;
+                }
+            }
+            _ => self.status = format!("Usage: :lines <1-{most}>"),
+        }
+    }
+
+    /// When analysing, makes sure the engine is searching the position on the board: if it
+    /// has changed since the last search began, stops that search and starts another.
+    fn sync_analysis(&mut self, engine: &mut dyn Engine) {
+        let Some(analysis) = &self.analysis else {
+            return;
+        };
+        let game = self.shown_game();
+        let start = game.start().to_fen();
+        let moves = rules::game_moves_uci(&game);
+        let key = format!("{start} {} {}", moves.join(" "), self.analysis_lines());
+        if analysis.key.as_deref() == Some(key.as_str()) {
+            return;
+        }
+        if let Some(id) = analysis.id {
+            let _ = engine.stop(id);
+        }
+        let mut params = SearchParams::new(proto::Position::fen(start).with_moves(moves))
+            .limits(SearchLimits::infinite());
+        let lines = self.analysis_lines();
+        if lines > 1 {
+            params.multipv = Some(lines);
+        }
+        params.progress_ms = Some(if lines > 1 {
+            ANALYSIS_PROGRESS_MS
+        } else {
+            PROGRESS_MS
+        });
+        params.game = Some(format!("cbtui-{}", self.game_number));
+        match engine.search(&params) {
+            Ok(id) => {
+                if let Some(analysis) = &mut self.analysis {
+                    analysis.restart(id, key);
+                }
+            }
+            Err(e) => {
+                self.status = e;
+                if let Some(analysis) = &mut self.analysis {
+                    // Not tried again until the position changes.
+                    analysis.key = Some(key);
+                    analysis.id = None;
+                }
+            }
+        }
     }
 
     fn set_level(&mut self, text: &str) {
@@ -1102,8 +1278,19 @@ impl App {
         self.maybe_start_engine(engine);
     }
 
+    /// Why the engine can't be asked to play now: it's analysing.
+    fn analysing(&self) -> Option<String> {
+        self.analysis
+            .is_some()
+            .then(|| "You're analysing: press i to stop, then play on.".to_string())
+    }
+
     /// Makes the engine play the side to move now, whoever plays it.
     fn go(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.analysing() {
+            self.status = reason;
+            return;
+        }
         if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
             self.status = reason;
             return;
@@ -1224,6 +1411,13 @@ impl App {
     pub fn handle_node(&mut self, event: NodeEvent, engine: &mut dyn Engine) {
         match event {
             NodeEvent::Progress(progress) => {
+                let position = self.shown_position();
+                if let Some(analysis) = &mut self.analysis
+                    && analysis.id.is_some_and(|id| progress.id == id.into())
+                {
+                    analysis.progress(&progress, &position);
+                    return;
+                }
                 let current = self
                     .pending
                     .is_some_and(|pending| progress.id == pending.id.into());
@@ -1251,6 +1445,9 @@ impl App {
             NodeEvent::Closed(reason) => {
                 self.disconnected = true;
                 self.pending = None;
+                if let Some(analysis) = &mut self.analysis {
+                    analysis.id = None;
+                }
                 self.status = format!("Engine disconnected: {reason}");
             }
         }
@@ -1264,6 +1461,25 @@ impl App {
             self.levels_request = None;
             if let Ok(levels) = response.result::<proto::Levels>() {
                 self.levels = Some(levels);
+            }
+            return;
+        }
+        if self.analysis.as_ref().is_some_and(|a| a.id == Some(id)) {
+            let position = self.shown_position();
+            match response.result::<proto::Search>() {
+                Ok(result) => {
+                    if let Some(analysis) = &mut self.analysis {
+                        analysis.result(&result, &position);
+                    }
+                }
+                Err(e) => {
+                    if let Some(analysis) = &mut self.analysis {
+                        analysis.id = None;
+                    }
+                    if e.code != code::CANCELLED {
+                        self.status = format!("{} couldn't analyse: {}", self.node.name, e.message);
+                    }
+                }
             }
             return;
         }
@@ -1399,8 +1615,10 @@ mod tests {
             caps: EngineCapabilities {
                 progress: true,
                 strength: true,
+                multipv: true,
                 ..EngineCapabilities::default()
             },
+            max_multipv: 4,
         }
     }
 
@@ -1757,6 +1975,108 @@ mod tests {
         type_line(&mut app, &mut engine, ":clock off");
         assert_eq!(app.clocks, None);
         assert_eq!(app.settings.clock, None);
+    }
+
+    fn analysis_progress(id: i64, multipv: u32, pv: &[&str]) -> NodeEvent {
+        NodeEvent::Progress(Progress {
+            id: id.into(),
+            depth: 12,
+            sel_depth: 15,
+            score: Score::cp(20),
+            pv: pv.iter().map(|m| m.to_string()).collect(),
+            multipv: Some(multipv),
+            nodes: 9000,
+            nps: Some(90_000),
+            time_ms: 100,
+            hash_full: None,
+            tb_hits: None,
+        })
+    }
+
+    #[test]
+    fn analysis_searches_the_board_until_stopped_and_follows_each_move() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        app.handle_key(key('i'), &mut engine);
+        assert_eq!(engine.searches.len(), 1);
+        let params = &engine.searches[0];
+        assert!(params.limits.infinite);
+        assert_eq!(params.multipv, Some(DEFAULT_LINES));
+        // Every report, so each line is heard, not just the best.
+        assert_eq!(params.progress_ms, Some(ANALYSIS_PROGRESS_MS));
+        app.handle_node(analysis_progress(101, 1, &["e2e4", "e7e5"]), &mut engine);
+        app.handle_node(analysis_progress(101, 2, &["d2d4"]), &mut engine);
+        let lines = &app.analysis.as_ref().unwrap().lines;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].pv, ["e4", "e5"]);
+
+        // A move: the engine plays neither side now, and the analysis starts again.
+        type_line(&mut app, &mut engine, "e4");
+        assert_eq!(app.game.moves().len(), 1);
+        assert_eq!(engine.stops, [101]);
+        assert_eq!(engine.searches.len(), 2);
+        assert_eq!(engine.searches[1].position.moves, ["e2e4"]);
+        assert!(app.analysis.as_ref().unwrap().lines.is_empty());
+        // A late report from the old search is dropped.
+        app.handle_node(analysis_progress(101, 1, &["e2e4"]), &mut engine);
+        assert!(app.analysis.as_ref().unwrap().lines.is_empty());
+        // Black can move too.
+        type_line(&mut app, &mut engine, "c5");
+        assert_eq!(app.game.moves().len(), 2);
+
+        // Stopping puts the engine back on Black, and it's White's move.
+        app.handle_key(key('i'), &mut engine);
+        assert_eq!(app.analysis, None);
+        assert_eq!(engine.stops, [101, 102, 103]);
+        assert_eq!(app.settings.engine_plays, [false, true]);
+        assert!(!app.searching());
+    }
+
+    #[test]
+    fn analysis_follows_the_pgn_viewer() {
+        let (mut app, mut engine) = (viewer(true), FakeEngine::default());
+        app.handle_key(key('i'), &mut engine);
+        press(&mut app, &mut engine, KeyCode::Right);
+        press(&mut app, &mut engine, KeyCode::Right);
+        assert_eq!(engine.searches.len(), 3);
+        assert_eq!(engine.searches[2].position.moves, ["e2e4", "e7e5"]);
+        // A key that doesn't move the board doesn't start the search again.
+        app.handle_key(key('t'), &mut engine);
+        assert_eq!(engine.searches.len(), 3);
+    }
+
+    #[test]
+    fn lines_sets_how_many_and_the_engine_decides_if_it_can() {
+        let (mut app, mut engine) = (app(), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":lines 9");
+        assert!(app.status.contains("1-4"), "{}", app.status);
+        type_line(&mut app, &mut engine, ":lines 1");
+        app.handle_key(key('i'), &mut engine);
+        assert_eq!(engine.searches[0].multipv, None);
+        type_line(&mut app, &mut engine, ":lines 2");
+        assert_eq!(engine.searches.len(), 2, "searched again for two lines");
+        assert_eq!(engine.searches[1].multipv, Some(2));
+
+        // An engine with no MultiPV: one line, and it says so.
+        let mut single = node();
+        single.caps.multipv = false;
+        let mut app = App::new(single, Settings::default()).unwrap();
+        type_line(&mut app, &mut engine, ":lines 3");
+        assert!(app.status.contains("one line"), "{}", app.status);
+        assert_eq!(app.analysis_lines(), 1);
+    }
+
+    #[test]
+    fn analysis_needs_an_engine_that_reports_progress() {
+        let mut quiet = node();
+        quiet.caps.progress = false;
+        let (mut app, mut engine) = (
+            App::new(quiet, Settings::default()).unwrap(),
+            FakeEngine::default(),
+        );
+        app.handle_key(key('i'), &mut engine);
+        assert_eq!(app.analysis, None);
+        assert!(app.status.contains("doesn't report"), "{}", app.status);
+        assert!(engine.searches.is_empty());
     }
 
     #[test]

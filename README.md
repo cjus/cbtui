@@ -52,7 +52,8 @@ queen, rook, bishop and knight on the squares beside it: click one, or press `q`
 | `[` `]` | look back through the game a move at a time (`Home`, `End`); moves wait until you're back at the end |
 | `t` | turn the board around |
 | `z` | zoom: the board fills the screen, without the side panels; again to bring them back |
-| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
+| `i` | analyse: the engine studies the position on the board, several lines at once, until `i` again |
+| `:` | type a command: `:play white\|black\|both\|none`, `:level <n>\|max`, `:time <ms>`, `:lines <n>`, `:clock <min>+<sec>\|off`, `:resign`, `:draw`, `:fen <FEN>`, `:pgn <file>` |
 | `q` | quit |
 
 With a clock, the clocks start with the first move and stand beside the players' names. An
@@ -60,6 +61,12 @@ engine that can read a clock (the CNP `clock` capability, as cb2026 can) is sent
 decides its own time; one that can't gets a share of its time left each move. `:draw` offers
 the engine a draw, which it answers with its next move: it accepts when its own score says it
 isn't better. `u` takes back a resignation or an agreed draw.
+
+Analysing (`i`), the engine plays neither side and the clocks stop: move for both sides,
+or look back with `[` `]`, and the engine panel follows the position on the board with its
+best lines (`:lines <n>` for how many, if the engine can find several). In the PGN viewer it
+takes the place of the notes and follows you through the game. `i` again puts back who
+played what.
 
 ## View a PGN game
 
