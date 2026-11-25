@@ -234,13 +234,16 @@ impl Config {
     }
 }
 
-/// Where the settings file is: `$CBTUI_CONFIG`, else `~/.cbtuirc`. `None` with no home.
+/// Where the settings file is: `$CBTUI_CONFIG`, else `.cbtuirc` in the home directory
+/// (`$HOME`, or on Windows `%USERPROFILE%`). `None` with no home.
 pub fn path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(CONFIG_ENV).filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
+    // Windows has no `HOME`, as a rule; its home directory is `USERPROFILE`.
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .find_map(|name| std::env::var_os(name).filter(|h| !h.is_empty()))
         .map(|home| PathBuf::from(home).join(CONFIG_FILE))
 }
 

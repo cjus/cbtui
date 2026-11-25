@@ -9,6 +9,16 @@ use crate::theme::Theme;
 /// The engine started when none is named: `cb2026` from the `PATH`, in CNP mode.
 pub const DEFAULT_ENGINE: &str = "cb2026";
 
+/// The engine started when none is named and a release's own cb2026 sits beside cbtui: the
+/// path to it, if it's there. A download that unpacks the two together then plays at once,
+/// without either on the `PATH`.
+pub fn bundled_engine(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let beside = exe
+        .parent()?
+        .join(format!("{DEFAULT_ENGINE}{}", std::env::consts::EXE_SUFFIX));
+    beside.is_file().then_some(beside)
+}
+
 /// The engine's arguments when none are given.
 pub const DEFAULT_ENGINE_ARGS: &[&str] = &["--cnp"];
 
@@ -22,7 +32,8 @@ cbtui: play chess in the terminal against an engine that speaks the Chess Node P
 Usage: cbtui [options]
 
 Options:
-  --engine <path>        The engine to start (default: $CBTUI_ENGINE, else `cb2026` on the PATH)
+  --engine <path>        The engine to start (default: $CBTUI_ENGINE, else the settings
+                         file's, else a cb2026 beside cbtui, else `cb2026` on the PATH)
   --engine-arg <arg>     An argument for the engine; repeat for more (default: --cnp)
   --play <side>          Which sides the engine plays: white, black (default), both, none
   --level <n>            The engine's playing level, if it has levels (default: full strength)
@@ -271,6 +282,18 @@ mod tests {
         assert_eq!(settings.engine_plays, [true, false]);
         assert_eq!(settings.level, Some(8.0));
         assert_eq!(settings.movetime_ms, 250);
+    }
+
+    #[test]
+    fn a_cb2026_beside_cbtui_is_found() {
+        let dir = std::env::temp_dir().join(format!("cbtui-bundle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("cbtui");
+        assert_eq!(bundled_engine(&exe), None);
+        let engine = dir.join(format!("cb2026{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&engine, "").unwrap();
+        assert_eq!(bundled_engine(&exe), Some(engine));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

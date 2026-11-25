@@ -75,6 +75,14 @@ fn main() -> ExitCode {
 
     let (tx, rx) = mpsc::channel();
     let node_tx = tx.clone();
+    // No engine named: a release's own cb2026, unpacked beside cbtui, before the PATH's.
+    let engine = match std::env::current_exe() {
+        Ok(exe) if engine == args::DEFAULT_ENGINE => {
+            args::bundled_engine(&exe).map_or(engine, |path| path.to_string_lossy().into_owned())
+        }
+        _ => engine,
+    };
+
     // Connect before taking over the terminal, so a missing engine is a plain error message.
     // A PGN viewer carries on without one.
     let mut no_engine_reason = None;
