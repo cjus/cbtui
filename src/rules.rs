@@ -7,7 +7,24 @@
 //! the Chess Node Protocol ([`crate::node`]); linking its rules crate doesn't tie cbtui to it.
 
 pub use cb2026_chess::game::{Game, Outcome};
+pub use cb2026_chess::pgn::{Annotations as PgnAnnotations, Line as PgnLine, PgnGame};
 pub use cb2026_chess::{Color, File, Move, MoveKind, Piece, PieceType, Position, Rank, Square};
+
+/// Reads the first game in PGN `text`, with its comments, glyphs and variations.
+pub fn parse_pgn(text: &str) -> Result<PgnGame, String> {
+    PgnGame::parse(text)
+}
+
+/// The symbol for a PGN numeric annotation glyph (`$1` is `!`, `$16` is `±`), if it has one.
+pub fn glyph(nag: u8) -> Option<&'static str> {
+    cb2026_chess::pgn::glyph(nag)
+}
+
+/// A PGN comment's text without its commands (`[%clk 0:04:52]`, `[%eval 0.31]`), its spaces
+/// collapsed and trimmed.
+pub fn comment_text(comment: &str) -> String {
+    cb2026_chess::pgn::commands(comment).0
+}
 
 /// The square on `file` (0 = a) and `rank` (0 = 1), or `None` off the board.
 pub fn square(file: usize, rank: usize) -> Option<Square> {

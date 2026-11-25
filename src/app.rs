@@ -12,6 +12,14 @@
 //! A newer engine with more capabilities works unchanged, and its extra features can be
 //! switched on here as cbtui learns them.
 //!
+//! ## Looking at other positions
+//!
+//! The board shows [`App::shown_position`], which is not always the game's. As a PGN viewer
+//! (`--pgn`, [`App::review`]) it shows the viewer's place in the recorded game, the arrows
+//! step through it, and the board is read-only until `:play` turns the position shown into a
+//! game. In a game, `[` and `]` look back through its moves ([`App::browse`]); the engine
+//! keeps playing meanwhile, and moves can't be made until the board is back at the end.
+//!
 //! ## The engine's turn
 //!
 //! After every change, [`App`] checks whether the engine plays the side to move. If so, and no
@@ -29,7 +37,8 @@ use cnp::{Response, code};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::node::{Engine, NodeEvent};
-use crate::rules::{self, Color, Game, Square};
+use crate::review::Review;
+use crate::rules::{self, Color, Game, Move, Position, Square};
 
 /// How often a search reports progress, in milliseconds, when the engine can.
 pub const PROGRESS_MS: u64 = 200;
@@ -39,6 +48,10 @@ pub const DEFAULT_MOVETIME_MS: u64 = 1000;
 
 /// The longest the engine may be asked to think about one move, in milliseconds.
 pub const MAX_MOVETIME_MS: u64 = 600_000;
+
+/// What cbtui says when asked to use an engine it doesn't have.
+const NO_ENGINE: &str =
+    "There's no engine. Start cbtui with --engine <path> (or $CBTUI_ENGINE) to play one.";
 
 /// How many lines of the engine's stderr are kept.
 const STDERR_LINES: usize = 50;
@@ -57,6 +70,14 @@ pub struct NodeSummary {
 }
 
 impl NodeSummary {
+    /// The summary when there is no engine (a PGN viewer can do without one).
+    pub fn absent() -> NodeSummary {
+        NodeSummary {
+            name: "no engine".into(),
+            ..NodeSummary::default()
+        }
+    }
+
     /// The summary of an `initialize` answer.
     pub fn from_info(info: &cnp::lifecycle::InitializeResult) -> NodeSummary {
         NodeSummary {
@@ -135,6 +156,13 @@ pub struct App {
     pub flipped: bool,
     /// Whether the board fills the screen, without the side panels (the `z` key).
     pub zoomed: bool,
+    /// The recorded game being viewed, when cbtui is a PGN viewer (`--pgn`).
+    pub review: Option<Review>,
+    /// In a game, how many of its moves the board shows while looking back (`[`); `None`
+    /// shows the game as it stands.
+    pub browse: Option<usize>,
+    /// Whether there is an engine at all: a PGN viewer starts without one if none is found.
+    pub has_engine: bool,
     /// The keyboard cursor.
     pub cursor: Square,
     /// Whether to show the cursor (after the arrow keys are used, not after a click).
@@ -180,6 +208,9 @@ impl App {
             levels: None,
             flipped: false,
             zoomed: false,
+            review: None,
+            browse: None,
+            has_engine: true,
             cursor: rules::square(4, 1).expect("e2 is on the board"),
             cursor_visible: false,
             selected: None,
@@ -194,6 +225,83 @@ impl App {
             levels_request: None,
             game_number: 1,
         })
+    }
+
+    /// Views `review` as a PGN viewer, from its starting position. The board is read-only and
+    /// the engine plays neither side, until `:play` plays on from the position shown.
+    pub fn open_review(&mut self, review: Review) {
+        self.status = format!(
+            "Viewing {}: ← → to step through it, ? for help.",
+            review.name
+        );
+        // Not shown while viewing; `:play` replaces it with the game to the position shown.
+        self.game = Game::from_position(review.start().clone());
+        self.settings.engine_plays = [false, false];
+        self.review = Some(review);
+        self.browse = None;
+        self.selected = None;
+        self.thinking = None;
+    }
+
+    /// The position on the board: the viewer's, the one looked back at, or the game's.
+    pub fn shown_position(&self) -> Position {
+        if let Some(review) = &self.review {
+            return review.current().position.clone();
+        }
+        match self.browse {
+            Some(ply) => {
+                let mut position = self.game.start().clone();
+                for played in self.game.moves().iter().take(ply) {
+                    position.make_move(played.mv);
+                }
+                position
+            }
+            None => self.game.position().clone(),
+        }
+    }
+
+    /// The move that led to the position on the board, if any.
+    pub fn shown_last_move(&self) -> Option<Move> {
+        if let Some(review) = &self.review {
+            return review.current().mv;
+        }
+        match self.browse {
+            Some(ply) => ply
+                .checked_sub(1)
+                .and_then(|i| self.game.moves().get(i))
+                .map(|played| played.mv),
+            None => self.game.last_move().map(|played| played.mv),
+        }
+    }
+
+    /// The move that led to the position on the board, numbered: `12. Nf3` or `12… Nc6`.
+    pub fn shown_move_label(&self) -> Option<String> {
+        if let Some(review) = &self.review {
+            return (review.cursor() != 0).then(|| review.label(review.cursor(), true));
+        }
+        let ply = self.browse.unwrap_or(self.game.moves().len());
+        let played = self.game.moves().get(ply.checked_sub(1)?)?;
+        let start = self.game.start();
+        // Plies counted from White's move of the starting position's move number.
+        let k = ply - 1 + usize::from(start.side_to_move() == Color::Black);
+        let number = start.fullmove_number() as usize + k / 2;
+        Some(if k.is_multiple_of(2) {
+            format!("{number}. {}", played.san)
+        } else {
+            format!("{number}… {}", played.san)
+        })
+    }
+
+    /// Why the board can't be played on now, if it can't: a PGN viewer, or looking back.
+    fn read_only(&self) -> Option<String> {
+        if let Some(review) = &self.review {
+            return Some(format!(
+                "{} is read-only here. :play white|black|both|none plays on from this position.",
+                review.name
+            ));
+        }
+        self.browse
+            .map(|_| "You're looking back. Press ] or End to return to the game.".into())
     }
 
     /// Starts the session: if the engine plays the side to move (`--play white`), it starts
@@ -263,6 +371,14 @@ impl App {
             self.show_help = false;
             return;
         }
+        let stepped = if self.review.is_some() {
+            self.review_key(key.code)
+        } else {
+            self.browse_key(key.code)
+        };
+        if stepped {
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.show_help = true,
@@ -288,6 +404,49 @@ impl App {
             KeyCode::Esc => self.selected = None,
             _ => {}
         }
+    }
+
+    /// The PGN viewer's keys: the arrows (and `[`, `]`, Home, End) step through the game, and
+    /// a digit enters a variation. True if the key was one of them.
+    fn review_key(&mut self, code: KeyCode) -> bool {
+        let Some(review) = &mut self.review else {
+            return false;
+        };
+        match code {
+            KeyCode::Left | KeyCode::Char('[') => {
+                review.back();
+            }
+            KeyCode::Right | KeyCode::Char(']') => {
+                review.forward();
+            }
+            KeyCode::Up | KeyCode::Home => review.to_start(),
+            KeyCode::Down | KeyCode::End => review.to_end(),
+            KeyCode::Char(c @ '1'..='9') => {
+                let n = c as usize - '0' as usize;
+                if !review.enter(n) {
+                    self.status = format!("There's no variation {n} at this move.");
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Looking back through a game: `[` and `]` step, Home and End jump to its start and back
+    /// to where it stands. True if the key was one of them.
+    fn browse_key(&mut self, code: KeyCode) -> bool {
+        let length = self.game.moves().len();
+        let shown = self.browse.unwrap_or(length).min(length);
+        let to = match code {
+            KeyCode::Char('[') => shown.saturating_sub(1),
+            KeyCode::Char(']') => (shown + 1).min(length),
+            KeyCode::Home => 0,
+            KeyCode::End => length,
+            _ => return false,
+        };
+        self.browse = (to < length).then_some(to);
+        self.selected = None;
+        true
     }
 
     fn handle_input_key(&mut self, key: KeyEvent, engine: &mut dyn Engine) {
@@ -342,6 +501,10 @@ impl App {
 
     /// Picks up a piece on `square`, or puts the picked-up one down there.
     fn handle_square(&mut self, square: Square, engine: &mut dyn Engine) {
+        if let Some(reason) = self.read_only() {
+            self.status = reason;
+            return;
+        }
         let position = self.game.position().clone();
         if let Some(from) = self.selected
             && let Some(mv) = rules::move_between(&position, from, square)
@@ -364,6 +527,10 @@ impl App {
         if text.is_empty() {
             return;
         }
+        if let Some(reason) = self.read_only() {
+            self.status = reason;
+            return;
+        }
         match self.game.position().parse_move(text) {
             Ok(mv) => self.human_move(mv, engine),
             Err(e) => self.status = format!("Can't play `{text}`: {e}"),
@@ -372,6 +539,10 @@ impl App {
 
     /// Plays a person's move, if it's their turn.
     fn human_move(&mut self, mv: rules::Move, engine: &mut dyn Engine) {
+        if let Some(reason) = self.read_only() {
+            self.status = reason;
+            return;
+        }
         if let Some(outcome) = self.game.outcome() {
             self.status = format!("The game is over. {}", rules::describe_outcome(outcome));
             return;
@@ -427,13 +598,18 @@ impl App {
                 }
                 _ => self.status = format!("Usage: :time <1-{MAX_MOVETIME_MS}> (milliseconds)"),
             },
+            ("pgn", [_]) if self.review.is_some() => {
+                self.status = "This game is already a PGN file.".into();
+            }
             ("pgn", [path]) => self.save_pgn(path),
             _ => self.status = format!("Unknown command `:{line}`. Press ? for help."),
         }
     }
 
+    /// Sets which sides the engine plays. In the PGN viewer, this also turns the position
+    /// shown into a game, the moves to it included, and leaves the viewer.
     fn set_play(&mut self, side: &str, engine: &mut dyn Engine) {
-        self.settings.engine_plays = match side {
+        let sides = match side {
             "white" | "w" => [true, false],
             "black" | "b" => [false, true],
             "both" => [true, true],
@@ -443,7 +619,25 @@ impl App {
                 return;
             }
         };
-        self.status = format!("{} plays {side}.", self.node.name);
+        if sides.contains(&true) && !self.has_engine {
+            self.status = NO_ENGINE.into();
+            return;
+        }
+        let mut status = match sides {
+            [false, false] => "You play both sides.".to_string(),
+            _ => format!("{} plays {side}.", self.node.name),
+        };
+        if let Some(review) = self.review.take() {
+            self.cancel_search(engine);
+            self.game = review.game_here();
+            self.game_number += 1;
+            self.selected = None;
+            self.thinking = None;
+            status = format!("Playing on from {}. {status}", review.name);
+        }
+        self.browse = None;
+        self.settings.engine_plays = sides;
+        self.status = status;
         self.maybe_start_engine(engine);
     }
 
@@ -510,6 +704,8 @@ impl App {
         };
         self.cancel_search(engine);
         self.game = game;
+        self.review = None;
+        self.browse = None;
         self.game_number += 1;
         self.selected = None;
         self.thinking = None;
@@ -519,6 +715,11 @@ impl App {
 
     /// Takes back the last move, and the engine's reply before it, so it's the person's turn.
     fn undo(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
+            self.status = reason;
+            return;
+        }
+        self.browse = None;
         self.cancel_search(engine);
         if self.game.undo().is_none() {
             self.status = "No move to take back.".into();
@@ -536,6 +737,11 @@ impl App {
 
     /// Makes the engine play the side to move now, whoever plays it.
     fn go(&mut self, engine: &mut dyn Engine) {
+        if let Some(reason) = self.review.is_some().then(|| self.read_only()).flatten() {
+            self.status = reason;
+            return;
+        }
+        self.browse = None;
         if self.searching() {
             self.status = format!("{} is already thinking.", self.node.name);
             return;
@@ -573,6 +779,10 @@ impl App {
     }
 
     fn start_search(&mut self, engine: &mut dyn Engine) {
+        if !self.has_engine {
+            self.status = NO_ENGINE.into();
+            return;
+        }
         if self.disconnected {
             self.status = "The engine has gone. Restart cbtui.".into();
             return;
@@ -844,6 +1054,110 @@ mod tests {
         app.handle_key(key('z'), &mut engine);
         assert!(!app.zoomed);
         assert_eq!(app.input.as_deref(), Some(":z"));
+    }
+
+    const PGN: &str = "[White \"Ann\"]\n[Black \"Bo\"]\n\n1. e4 e5 2. Nf3 (2. f4 exf4) Nc6 *";
+
+    fn viewer(has_engine: bool) -> App {
+        let mut app = app();
+        app.has_engine = has_engine;
+        app.open_review(Review::from_pgn(PGN, "g.pgn").unwrap());
+        app
+    }
+
+    fn press(app: &mut App, engine: &mut FakeEngine, code: KeyCode) {
+        app.handle_key(KeyEvent::from(code), engine);
+    }
+
+    #[test]
+    fn the_viewer_steps_with_the_arrows_and_enters_variations() {
+        let (mut app, mut engine) = (viewer(true), FakeEngine::default());
+        assert_eq!(app.shown_position(), *app.review.as_ref().unwrap().start());
+        press(&mut app, &mut engine, KeyCode::Right);
+        press(&mut app, &mut engine, KeyCode::Right);
+        assert_eq!(app.shown_move_label().as_deref(), Some("1… e5"));
+        app.handle_key(key('1'), &mut engine);
+        assert_eq!(app.shown_move_label().as_deref(), Some("2. f4"));
+        app.handle_key(key('2'), &mut engine);
+        assert!(app.status.contains("no variation 2"), "{}", app.status);
+        press(&mut app, &mut engine, KeyCode::Left);
+        press(&mut app, &mut engine, KeyCode::Down);
+        assert_eq!(app.shown_move_label().as_deref(), Some("2… Nc6"));
+        press(&mut app, &mut engine, KeyCode::Up);
+        assert_eq!(app.shown_move_label(), None);
+        // Nothing went to the engine.
+        assert!(engine.searches.is_empty());
+    }
+
+    #[test]
+    fn the_viewer_is_read_only_until_play_plays_on() {
+        let (mut app, mut engine) = (viewer(true), FakeEngine::default());
+        press(&mut app, &mut engine, KeyCode::Right);
+        app.handle_click(sq("e7"), &mut engine);
+        assert_eq!(app.selected, None);
+        assert!(app.status.contains("read-only"), "{}", app.status);
+        type_line(&mut app, &mut engine, "e5");
+        assert!(app.status.contains("read-only"), "{}", app.status);
+        app.handle_key(key('u'), &mut engine);
+        assert!(app.status.contains("read-only"), "{}", app.status);
+
+        // :play black: a game of the moves so far, the engine to move as Black.
+        type_line(&mut app, &mut engine, ":play black");
+        assert!(app.review.is_none());
+        let sans: Vec<&str> = app.game.moves().iter().map(|m| m.san.as_str()).collect();
+        assert_eq!(sans, ["e4"]);
+        assert_eq!(engine.searches.len(), 1);
+        assert!(
+            app.status.contains("Playing on from g.pgn"),
+            "{}",
+            app.status
+        );
+    }
+
+    #[test]
+    fn without_an_engine_the_viewer_plays_on_only_as_both_sides() {
+        let (mut app, mut engine) = (viewer(false), FakeEngine::default());
+        type_line(&mut app, &mut engine, ":play black");
+        assert!(app.review.is_some());
+        assert!(app.status.contains("no engine"), "{}", app.status);
+        type_line(&mut app, &mut engine, ":play none");
+        assert!(app.review.is_none());
+        type_line(&mut app, &mut engine, "e4");
+        assert_eq!(app.game.moves().len(), 1);
+        app.handle_key(key('m'), &mut engine);
+        assert!(app.status.contains("no engine"), "{}", app.status);
+        assert!(engine.searches.is_empty());
+    }
+
+    #[test]
+    fn brackets_look_back_through_a_game_and_block_moves_meanwhile() {
+        let settings = Settings {
+            engine_plays: [false, false],
+            ..Settings::default()
+        };
+        let (mut app, mut engine) = (App::new(node(), settings).unwrap(), FakeEngine::default());
+        for mv in ["e4", "e5", "Nf3"] {
+            type_line(&mut app, &mut engine, mv);
+        }
+        let live = app.shown_position();
+        app.handle_key(key('['), &mut engine);
+        assert_eq!(app.browse, Some(2));
+        assert_eq!(app.shown_move_label().as_deref(), Some("1… e5"));
+        assert_eq!(app.shown_last_move(), Some(app.game.moves()[1].mv));
+        // A move while looking back is refused.
+        type_line(&mut app, &mut engine, "Nc6");
+        assert_eq!(app.game.moves().len(), 3);
+        assert!(app.status.contains("looking back"), "{}", app.status);
+        press(&mut app, &mut engine, KeyCode::Home);
+        assert_eq!(app.browse, Some(0));
+        assert_eq!(app.shown_position(), *app.game.start());
+        press(&mut app, &mut engine, KeyCode::End);
+        assert_eq!(app.browse, None);
+        assert_eq!(app.shown_position(), live);
+        // The arrows still move the board's cursor in a game.
+        press(&mut app, &mut engine, KeyCode::Left);
+        assert_eq!(app.browse, None);
+        assert_eq!(app.cursor, sq("d2"));
     }
 
     #[test]

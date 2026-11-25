@@ -7,8 +7,9 @@ use std::thread;
 
 use cbtui::app::{App, NodeSummary};
 use cbtui::args::{self, Args, ENGINE_ENV, USAGE};
-use cbtui::node::{Node, NodeEvent};
+use cbtui::node::{Engine, NoEngine, Node, NodeEvent};
 use cbtui::pieces::{PieceChoice, Pieces};
+use cbtui::review::Review;
 use cbtui::ui::{self, Palette};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
@@ -28,13 +29,14 @@ enum Event {
 
 fn main() -> ExitCode {
     let parsed = args::parse(std::env::args().skip(1), std::env::var(ENGINE_ENV).ok());
-    let (engine, engine_args, settings, piece_choice) = match parsed {
+    let (engine, engine_args, settings, piece_choice, pgn) = match parsed {
         Ok(Args::Run {
             engine,
             engine_args,
             settings,
             pieces,
-        }) => (engine, engine_args, settings, pieces),
+            pgn,
+        }) => (engine, engine_args, settings, pieces, pgn),
         Ok(Args::Help) => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -49,34 +51,60 @@ fn main() -> ExitCode {
         }
     };
 
+    let review = match pgn.as_deref().map(read_review).transpose() {
+        Ok(review) => review,
+        Err(e) => {
+            eprintln!("cbtui: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let (tx, rx) = mpsc::channel();
     let node_tx = tx.clone();
     // Connect before taking over the terminal, so a missing engine is a plain error message.
+    // A PGN viewer carries on without one.
+    let mut no_engine_reason = None;
     let mut node = match Node::spawn(&engine, &engine_args, move |event| {
         let _ = node_tx.send(Event::Node(event));
     }) {
-        Ok(node) => node,
+        Ok(node) => Some(node),
+        Err(e) if review.is_some() => {
+            no_engine_reason = Some(e.to_string());
+            None
+        }
         Err(e) => {
             eprintln!("cbtui: {e}");
             eprintln!("Name the engine with --engine <path> or ${ENGINE_ENV}.");
             return ExitCode::FAILURE;
         }
     };
-    let summary = NodeSummary::from_info(node.info());
+    let summary = node.as_ref().map_or_else(NodeSummary::absent, |node| {
+        NodeSummary::from_info(node.info())
+    });
     let mut app = match App::new(summary, settings) {
         Ok(app) => app,
         Err(e) => {
             eprintln!("cbtui: {e}");
-            node.shutdown();
+            if let Some(node) = node {
+                node.shutdown();
+            }
             return ExitCode::FAILURE;
         }
     };
-    if app.node.caps.strength
+    app.has_engine = node.is_some();
+    if let Some(review) = review {
+        app.open_review(review);
+    }
+    if let Some(reason) = no_engine_reason {
+        app.status = format!("{} (No engine: {reason}.)", app.status);
+    }
+    if let Some(node) = node.as_mut()
+        && app.node.caps.strength
         && let Ok(id) = node.levels()
     {
         app.expect_levels(id);
     }
-    app.start(&mut node);
+    app.start(engine_of(&mut node, &mut NoEngine));
 
     let mut terminal = ratatui::init();
     install_mouse_restoring_panic_hook();
@@ -108,13 +136,32 @@ fn main() -> ExitCode {
     let result = run(&mut terminal, &mut app, &mut node, &mut pieces, &rx);
     let _ = execute!(io::stdout(), DisableMouseCapture);
     ratatui::restore();
-    node.shutdown();
+    if let Some(node) = node {
+        node.shutdown();
+    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("cbtui: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Reads the PGN file at `path` for the viewer, named after the file.
+fn read_review(path: &str) -> Result<Review, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("can't read {path}: {e}"))?;
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or(path.into(), |name| name.to_string_lossy());
+    Review::from_pgn(&text, &name).map_err(|e| format!("can't read the game in {path}: {e}"))
+}
+
+/// The engine to ask: `node`, or `none` when there is no node.
+fn engine_of<'a>(node: &'a mut Option<Node>, none: &'a mut NoEngine) -> &'a mut dyn Engine {
+    match node {
+        Some(node) => node,
+        None => none,
     }
 }
 
@@ -152,7 +199,7 @@ fn install_mouse_restoring_panic_hook() {
 fn run(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    node: &mut Node,
+    node: &mut Option<Node>,
     pieces: &mut Pieces,
     rx: &Receiver<Event>,
 ) -> io::Result<()> {
@@ -180,7 +227,9 @@ fn run(
     Ok(())
 }
 
-fn handle(event: Event, app: &mut App, node: &mut Node, area: Rect, aspect: Option<f32>) {
+fn handle(event: Event, app: &mut App, node: &mut Option<Node>, area: Rect, aspect: Option<f32>) {
+    let mut none = NoEngine;
+    let node = engine_of(node, &mut none);
     match event {
         Event::Term(TermEvent::Key(key)) => app.handle_key(key, node),
         Event::Term(TermEvent::Mouse(mouse)) => {
