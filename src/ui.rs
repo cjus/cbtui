@@ -76,6 +76,9 @@ const ENGINE_PANEL_MIN_ROWS: u16 = 5;
 /// The move list's height, frame included, that the engine panel leaves it if it can.
 const MOVES_PANEL_MIN_ROWS: u16 = 5;
 
+/// Rows of the tree browser's top panel: the search, where the walk is, the node.
+const TREE_INFO_PANEL_ROWS: u16 = 10;
+
 /// Rows at the bottom of the root view for the latest re-search.
 const ROOT_RESEARCH_ROWS: u16 = 3;
 
@@ -360,6 +363,11 @@ pub fn draw(frame: &mut Frame, app: &App, palette: &Palette, pieces: &mut Pieces
         let block = Block::default().borders(Borders::ALL).title(" Board ");
         frame.render_widget(block, panels.board);
         let keys = match &app.review {
+            _ if app.tree.is_some() => {
+                let side = panels.info.union(panels.moves).union(panels.engine);
+                draw_tree(frame, side, app);
+                "↑ ↓ choose a move · → or Enter into it · ← back · Esc close the tree"
+            }
             Some(review) => {
                 let side = panels.info.union(panels.moves).union(panels.engine);
                 let [info, moves, notes] = split_side(side, REVIEW_INFO_PANEL_ROWS);
@@ -755,6 +763,168 @@ fn short_version(version: &str) -> String {
         }
         _ => version.to_string(),
     }
+}
+
+/// A search tree being walked, in place of the side panels: the search and the node shown,
+/// the node's children with their scores, and the highlighted child's decisions in full.
+fn draw_tree(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(tree) = &app.tree else {
+        return;
+    };
+    let level = tree.level();
+    let side = level.position.side_to_move();
+    let [info, children, about] = split_side(area, TREE_INFO_PANEL_ROWS);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let technique = |id: &str| {
+        app.techniques
+            .as_ref()
+            .and_then(|all| all.iter().find(|t| t.id == id))
+            .map_or(id.to_string(), |t| t.name.clone())
+    };
+
+    // The search, and where the walk is.
+    let mut head = format!(
+        "Depth {} · {} nodes · {} plies recorded",
+        tree.depth,
+        count_text(tree.nodes),
+        tree.plies
+    );
+    if tree.truncated {
+        head.push_str(" (cut short)");
+    }
+    let best = match (&tree.best, tree.score) {
+        (Some(best), Some(score)) => format!("Best {best} {}", score_text(score)),
+        (Some(best), None) => format!("Best {best}"),
+        _ => "No legal move".into(),
+    };
+    let path = tree.path_san();
+    let here = if path.is_empty() {
+        format!("At the root · {side} to move")
+    } else {
+        format!("After {} · {side} to move", path.join(" "))
+    };
+    let mut node_line = format!("Searched {} plies", level.node.depth);
+    if let (Some(low), Some(high)) = crate::tree::window(&level.node, side) {
+        node_line.push_str(&format!(
+            " · window {} to {}",
+            score_text(low),
+            score_text(high)
+        ));
+    }
+    if let Some(score) = crate::tree::node_score(&level.node, side) {
+        node_line.push_str(&format!(" · {}", crate::tree::bound_text(score)));
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(head, dim)),
+        Line::from(best),
+        Line::from(Span::styled(here, bold)),
+        Line::from(node_line),
+    ];
+    if let Some(parent) = tree.levels.iter().rev().nth(1) {
+        for decision in &level.node.decisions {
+            lines.push(Line::from(Span::styled(
+                crate::tree::describe(decision, &parent.position, &technique),
+                dim,
+            )));
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Search tree ");
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        info,
+    );
+
+    // The children, the highlighted one kept in view.
+    let title = format!(
+        " {} move{} searched here ",
+        level.children.len(),
+        if level.children.len() == 1 { "" } else { "s" }
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let rows = children.height.saturating_sub(2) as usize;
+    let skip = level.cursor.saturating_sub(rows.saturating_sub(1));
+    let child_lines: Vec<Line> = level
+        .children
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .take(rows)
+        .map(|(i, child)| {
+            let mv = child.mv.as_deref().unwrap_or("");
+            let san = rules::line_to_san(&level.position, &[mv.to_string()])
+                .pop()
+                .unwrap_or_else(|| mv.to_string());
+            let score = crate::tree::node_score(child, !side)
+                .map_or("…".to_string(), crate::tree::bound_text);
+            // A child's decisions name moves from the child's position.
+            let mut after = level.position.clone();
+            if let Some(parsed) = after.parse_uci_move(mv) {
+                after.make_move(parsed);
+            }
+            let briefs: Vec<String> = child
+                .decisions
+                .iter()
+                .map(|d| crate::tree::brief(d, &after))
+                .collect();
+            let below = if child.child_count > 0 { "›" } else { " " };
+            let text = format!(
+                "{san:<7} {score:>9}  d{:<2} {below} {}",
+                child.depth,
+                briefs.join(", ")
+            );
+            let style = if i == level.cursor {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(child_lines).block(block), children);
+
+    // The highlighted child's decisions in full.
+    let mut about_lines = Vec::new();
+    if let Some(child) = level.selected() {
+        let mut position = level.position.clone();
+        if let Some(parsed) = child
+            .mv
+            .as_deref()
+            .and_then(|mv| position.parse_uci_move(mv))
+        {
+            position.make_move(parsed);
+        }
+        if child.decisions.is_empty() {
+            about_lines.push(Line::from(Span::styled(
+                "Searched in full, nothing cut short.",
+                dim,
+            )));
+        }
+        for decision in &child.decisions {
+            about_lines.push(Line::from(crate::tree::describe(
+                decision, &position, &technique,
+            )));
+        }
+        let below = match child.subtree {
+            0 => "Nothing recorded below it.".to_string(),
+            n if child.child_count > 0 => {
+                format!("{} nodes recorded below it: → to look.", count_text(n))
+            }
+            n => format!("{} nodes recorded below it.", count_text(n)),
+        };
+        about_lines.push(Line::from(Span::styled(below, dim)));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" What the search decided ");
+    frame.render_widget(
+        Paragraph::new(about_lines)
+            .block(block)
+            .wrap(Wrap { trim: true }),
+        about,
+    );
 }
 
 /// The move list, or while following the root (`w`), the root.
@@ -1230,6 +1400,7 @@ Commands
   :level <n>|max                the engine's playing level
   :lines <n>                    how many lines an analysis shows
   :techniques                   switch the engine's search techniques
+  :tree [depth]                 search the board and walk the search's tree
   :time <ms>                    how long it thinks a move
   :clock <min>+<sec>|off        play to a clock (5+3), from the first move
   :resign  :draw                resign, or offer the engine a draw
@@ -1277,6 +1448,8 @@ mod tests {
             license: "MIT".into(),
             caps: Default::default(),
             max_multipv: 1,
+            max_tree_depth: 24,
+            max_tree_plies: 6,
         };
         App::new(node, Settings::default()).unwrap()
     }
@@ -1486,6 +1659,48 @@ mod tests {
         assert!(bar("e4") > 2 * bar("d4") && bar("d4") > 0, "{text}");
         assert!(text.contains("75%") && text.contains("25%"), "{text}");
         assert!(text.contains("At 0.3s: d4 looked better"), "{text}");
+    }
+
+    #[test]
+    fn the_tree_shows_the_node_its_moves_and_what_was_decided() {
+        let mut app = app();
+        let result: cnp::engine::TreeResult = serde_json::from_value(serde_json::json!({
+            "tree": "t1", "expiresMs": 300000, "depth": 8, "nodes": 34636, "timeMs": 31,
+            "bestMove": "f1b5", "score": {"cp": 36}, "pv": ["f1b5"],
+            "recorded": {"plies": 3, "nodes": 342, "decisions": 1033},
+            "root": {"depth": 8, "alpha": {"cp": 14}, "beta": {"cp": 64}, "score": {"cp": 36},
+                     "childCount": 2, "subtree": 341},
+            "children": [
+                {"move": "d2d4", "depth": 7, "score": {"cp": -14, "bound": "lower"},
+                 "childCount": 1, "subtree": 38,
+                 "decisions": [{"kind": "cutoff", "move": "e5d4", "order": 1, "technique": "alphabeta"}]},
+                {"move": "f1b5", "depth": 7, "score": {"cp": -36}, "childCount": 30, "subtree": 108}
+            ]
+        }))
+        .unwrap();
+        let position: rules::Position =
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"
+                .parse()
+                .unwrap();
+        app.tree = Some(crate::tree::TreeBrowser::new(result, position));
+        let text = screen(&app, 110, 36);
+        assert!(
+            text.contains("Depth 8 · 34.6k nodes · 3 plies recorded"),
+            "{text}"
+        );
+        assert!(text.contains("Best Bb5 +0.36"), "{text}");
+        assert!(text.contains("window +0.14 to +0.64"), "{text}");
+        assert!(text.contains("2 moves searched here"), "{text}");
+        assert!(
+            text.contains("d4        ≤ +0.14  d7  › refuted by exd4"),
+            "{text}"
+        );
+        assert!(text.contains("Bb5         +0.36  d7  ›"), "{text}");
+        assert!(
+            text.contains("exd4 refuted the move that led here"),
+            "{text}"
+        );
+        assert!(text.contains("Esc close the tree"), "{text}");
     }
 
     #[test]

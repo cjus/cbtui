@@ -67,7 +67,7 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 | **M1 · Playable** | CNP connection; board with mouse, keyboard and typed moves; engine plays either side, both or none; levels (if the engine has them) and time per move; live thinking; move list; undo, new game, FEN, flip; PGN save; help | A full game against cb2026 in a terminal, with no illegal moves and a clean exit |
 | **M2 · Clocks and game flow** | Chess clocks with increment (CNP `clock` limits), resign and draw offers, PGN load (the PGN viewer), promotion picker, move-list navigation (`[` `]`) | A timed game against cb2026 to the end |
 | **M3 · Analysis** | Infinite analysis with MultiPV (capabilities `multipv`), the evaluation broken into terms (`engine/evaluate`), technique switches (`engine/techniques`), each shown only when the engine has it | Analysing a position shows several lines and the evaluation's terms with cb2026 |
-| M4 · Look inside | Following the search at its root (`engine/root`; done) and browsing its search tree (`engine/tree`, `engine/treeNode`), generic views of what the engine reports | The tree browser opens a cb2026 search and walks it |
+| **M4 · Look inside** | Following the search at its root (`engine/root`) and browsing its search tree (`engine/tree`, `engine/treeNode`), generic views of what the engine reports | The tree browser opens a cb2026 search and walks it |
 | Later | Engines on another computer through cb2026's network client; a UCI backend; themes | Decided when M3 is done |
 
 ## Decisions
@@ -102,5 +102,10 @@ program; cbtui shows the licence it reports, with its whole version, on the help
 - [x] Following the root is `w` (and `:root`), in place of the move list while it's on, for
       game searches and analyses alike: the move searched, a bar per root move's share of the
       effort, and the latest re-search in words (2026-11-24).
+- [x] The tree browser is `:tree [depth]` (8 plies by default, 3 recorded, within the engine's
+      limits). It takes the side panels' place, and the board shows the node walked to, with
+      the highlighted move marked. Scores and windows are shown from White's side, like
+      every score; decisions are put in words in alpha-beta's terms, naming the technique
+      (2026-11-24).
 - [x] A zoom key (`z`) that hides the side panels so the board fills the screen; text squares
       grow past 7×3 when there is room (Carlos, 2026-11-24).
