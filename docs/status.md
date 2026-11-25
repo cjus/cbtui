@@ -110,9 +110,15 @@ changes the picture.
 - **Release downloads: set up** (twenty-first PR). A `v*` tag builds cbtui and cb2026 (at the
   pinned commit, without Syzygy) for five targets and attaches them, with the licences and
   `THIRD-PARTY-NOTICES.txt` (`scripts/notices.sh`), to a draft release; cbtui finds the cb2026
-  unpacked beside it. macOS signing waits on Carlos's Apple secrets (see
-  `docs/releasing.md`). The settings file finds the home directory on Windows too. No tag has
+  unpacked beside it. The settings file finds the home directory on Windows too. No tag has
   been pushed yet.
+- **macOS signing: set up** (twenty-second PR). Like cb2026's and Solrac's, on Carlos's Mac:
+  `scripts/mac-sign-release.sh <tag>` signs both binaries of each macOS download with the
+  keychain's Developer ID, notarises them with the `cb2026-notary` profile and replaces them on
+  the draft; `--trial <run>` signs a workflow run's builds without sending or uploading
+  anything. The trial passed on the release PR's builds (2026-11-25): all four signed with the
+  hardened runtime and still run, the Intel ones under Rosetta. Notarisation not run yet: it
+  waits for the first tag.
 - Known: ratatui-image's terminal query leaves a thread reading stdin when the terminal
   doesn't answer in time, which swallows a key. cbtui doesn't ask inside tmux, where that
   happened; elsewhere it says so on the status line if it happens.

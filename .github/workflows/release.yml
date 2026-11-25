@@ -3,13 +3,13 @@
 #
 # Each download is cbtui and the cb2026 engine it plays, built at the chessengine commit
 # Cargo.toml pins and without Syzygy tablebases (so it's MIT OR Apache-2.0 like cbtui), with
-# the licences and the third-party notices. macOS binaries are signed and notarised when the
-# Apple secrets are set (docs/releasing.md says which), and left unsigned, with a warning,
-# when they aren't.
+# the licences and the third-party notices. The macOS binaries are signed and notarised
+# afterwards, on Carlos's Mac, where the Developer ID key is: scripts/mac-sign-release.sh
+# replaces them on the draft (docs/releasing.md).
 #
 # A pull request that changes this workflow or the notices builds every download too, without
-# signing or releasing, so a broken build shows before a tag does. So does running it by hand
-# (`gh workflow run release.yml`), which also signs if it can.
+# releasing, so a broken build shows before a tag does. So does running it by hand
+# (`gh workflow run release.yml`).
 name: Release
 
 on:
@@ -129,50 +129,6 @@ jobs:
         run: |
           "$NAME/cbtui$EXE" --version
           "$NAME/cb2026$EXE" --version
-      # Developer ID signing and notarisation, for tags and runs by hand, when the secrets are
-      # there. A command-line binary can't have its ticket stapled, so Gatekeeper fetches it the
-      # first time the binary runs.
-      - name: Sign and notarise (macOS)
-        if: runner.os == 'macOS' && github.event_name != 'pull_request'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          if [[ -z "$APPLE_CERTIFICATE" ]]; then
-            echo "::warning::No Apple signing secrets: the macOS binaries are unsigned (docs/releasing.md)."
-            exit 0
-          fi
-          keychain="$RUNNER_TEMP/signing.keychain-db"
-          password=$(uuidgen)
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-          security create-keychain -p "$password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$password" "$keychain"
-          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" > /dev/null
-          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          for binary in cbtui cb2026; do
-            codesign --force --options runtime --timestamp \
-              --sign "$APPLE_SIGNING_IDENTITY" "$NAME/$binary"
-            codesign --verify --strict --verbose=2 "$NAME/$binary"
-          done
-          ditto -c -k --keepParent "$NAME" notarise.zip
-          xcrun notarytool submit notarise.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" --wait --output-format json | tee notarised.json
-          status=$(python3 -c 'import json; print(json.load(open("notarised.json"))["status"])')
-          if [[ "$status" != "Accepted" ]]; then
-            id=$(python3 -c 'import json; print(json.load(open("notarised.json"))["id"])')
-            xcrun notarytool log "$id" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_PASSWORD"
-            echo "::error::Notarisation was $status."
-            exit 1
-          fi
-          rm notarise.zip notarised.json
       - name: Archive
         shell: bash
         run: |
